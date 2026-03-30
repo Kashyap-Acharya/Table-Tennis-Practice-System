@@ -1,96 +1,197 @@
 """
-╔══════════════════════════════════════════════════════════════╗
-║        SMART TABLE TENNIS TRAINER — FastAPI Brain            ║
-║        IITGN Project | CV <-> FastAPI <-> Phone UI           ║
-╚══════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════════════╗
+║          IITGN — SMART TABLE TENNIS TRAINER  /  tt_trainer_backend.py   ║
+║          FastAPI  ·  WebSocket  ·  Shared Memory Bridge                  ║
+║                                                                          ║
+║  Architecture:                                                           ║
+║    [CV Process] ──SHM──▶ [Poller @ 60Hz] ──▶ [DrillSession]             ║
+║                                                      │                   ║
+║                                           [ConnectionManager]            ║
+║                                                      │                   ║
+║                                            [Phone UI clients]            ║
+╚══════════════════════════════════════════════════════════════════════════╝
 
-Architecture:
-  [CV Process] ──SHM──▶ [Poller @ 60Hz] ──▶ [DrillSession] ──▶ [WebSocket Broadcast]
-                                                                       │
-                                                              [Phone UI clients]
+Install:
+    pip install fastapi uvicorn[standard]
 
 Run:
-  pip install fastapi uvicorn websockets
-  uvicorn tt_trainer_backend:app --reload --host 0.0.0.0 --port 8000
+    uvicorn tt_trainer_backend:app --host 0.0.0.0 --port 8000
 """
+
+from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import struct
 import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from multiprocessing.shared_memory import SharedMemory
 from typing import Optional
 
+import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-# ─────────────────────────────────────────────
-#  CONSTANTS & CONFIG
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("tt-trainer")
 
-SHM_NAME        = "tt_cv_bridge"
-SHM_SIZE        = 32          # bytes — plenty for our struct + future fields
-POLL_HZ         = 60          # CV polling frequency
-POLL_INTERVAL   = 1.0 / POLL_HZ
 
-# Struct layout (little-endian):
-#   hit_recorded : uint8   (offset 0)  — latch: CV sets 1, API clears to 0
-#   success      : uint8   (offset 1)  — 1 = hit target, 0 = miss
-#   impact_y     : uint16  (offset 2)  — ball impact Y coordinate (px)
-#   impact_z     : uint16  (offset 4)  — ball impact Z coordinate (px)
-#   target_zone  : uint8   (offset 6)  — zone index that was targeted
-STRUCT_FMT    = "<BBHHBx"   # 8 bytes; trailing 'x' for alignment padding
-STRUCT_SIZE   = struct.calcsize(STRUCT_FMT)  # should be 8
+# ─────────────────────────────────────────────────────────────────────────────
+# SHARED MEMORY SCHEMA  (32-byte block written by CV process)
+# ─────────────────────────────────────────────────────────────────────────────
+#  Offset  Size  Type    Field
+#  ──────  ────  ──────  ──────────────────────────────────────────────────
+#    0      1    uint8   hit_recorded  (latch: CV sets 1, this process clears 0)
+#    1      1    uint8   success       (0 = miss, 1 = hit)
+#    2      2    uint16  impact_y_mm   (0 – 1525, physical board coords)
+#    4      2    uint16  impact_z_mm   (0 – 1000, physical board coords)
+#    6      1    uint8   target_zone   (1 – 9, numpad layout, set by THIS process)
+#    7      3    bytes   padding
+#   10     22    bytes   reserved for future fields
+#
+SHM_NAME   = "tt_cv_bridge"
+SHM_SIZE   = 32
+SHM_FMT    = "<B B H H B 3x 22x"   # 10 bytes of payload + 22 reserved = 32
+SHM_FIELDS = ("hit_recorded", "success", "impact_y", "impact_z", "target_zone")
 
-# ─────────────────────────────────────────────
-#  DIFFICULTY LEVELS
-# ─────────────────────────────────────────────
+POLL_HZ       = 60
+POLL_INTERVAL = 1.0 / POLL_HZ
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SHARED MEMORY BRIDGE
+# ─────────────────────────────────────────────────────────────────────────────
+class SharedMemoryBridge:
+    """
+    Attaches to the shared memory segment written by the CV process.
+    Falls back to creating a mock segment if the CV process is not running yet.
+    """
+
+    def __init__(self) -> None:
+        self._shm: SharedMemory | None = None
+        self._owner = False
+
+    def open(self) -> None:
+        try:
+            self._shm = SharedMemory(name=SHM_NAME, create=False, size=SHM_SIZE)
+            log.info("SHM: attached to existing segment '%s'", SHM_NAME)
+        except FileNotFoundError:
+            self._shm = SharedMemory(name=SHM_NAME, create=True, size=SHM_SIZE)
+            self._owner = True
+            log.warning("SHM: segment not found — created mock segment (dev mode)")
+            self._clear()
+
+    def close(self) -> None:
+        if self._shm:
+            self._shm.close()
+            if self._owner:
+                try:
+                    self._shm.unlink()
+                    log.info("SHM: segment '%s' unlinked", SHM_NAME)
+                except Exception:
+                    pass
+            self._shm = None
+
+    def read_frame(self) -> dict | None:
+        """Returns a shot data dict if a new shot is flagged, else None."""
+        if not self._shm:
+            return None
+        vals = struct.unpack_from(SHM_FMT, bytes(self._shm.buf[:SHM_SIZE]))
+        frame = dict(zip(SHM_FIELDS, vals))
+        return frame if frame["hit_recorded"] else None
+
+    def acknowledge(self) -> None:
+        """Clear the hit_recorded latch so we do not re-process the same shot."""
+        if self._shm:
+            self._shm.buf[0] = 0
+
+    def write_mock_shot(self, success: bool, y: int, z: int, zone: int) -> None:
+        """Dev only: write a fake frame as if the CV process fired."""
+        if not self._shm:
+            return
+        packed = struct.pack(SHM_FMT, 1, int(success), y, z, zone)
+        self._shm.buf[:SHM_SIZE] = packed
+
+    def _clear(self) -> None:
+        if self._shm:
+            self._shm.buf[:SHM_SIZE] = b"\x00" * SHM_SIZE
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DIFFICULTY LEVELS
+# ─────────────────────────────────────────────────────────────────────────────
+# Keys are 3-char prefixes that encode into drill_id (e.g. "BEG_01", "ADV_03").
+# interval is a (min_s, max_s) range — mock CV picks uniformly within it.
+# scatter_mm is the Gaussian σ around the zone centre for a successful hit.
 LEVEL_CONFIG: dict[str, dict] = {
-    "beginner": {
-        "hit_prob":       0.75,   # probability a shot is a success
-        "shot_interval":  2.5,    # seconds between simulated shots
-        "target_scatter": 30,     # ± pixel scatter around zone centre
-        "zones":          3,      # number of distinct target zones
-        "description":    "Slow pace, large targets, forgiving accuracy",
+    "BEG": {
+        "hit_prob":    0.80,
+        "interval":    (3.0, 5.0),
+        "scatter_mm":  80,
+        "description": "Slow pace, large targets, forgiving accuracy",
     },
-    "intermediate": {
-        "hit_prob":       0.55,
-        "shot_interval":  1.5,
-        "target_scatter": 60,
-        "zones":          5,
-        "description":    "Moderate pace, tighter zones, more variation",
+    "INT": {
+        "hit_prob":    0.65,
+        "interval":    (2.0, 3.5),
+        "scatter_mm":  60,
+        "description": "Moderate pace, tighter zones, more variation",
     },
-    "advanced": {
-        "hit_prob":       0.35,
-        "shot_interval":  0.8,
-        "target_scatter": 100,
-        "zones":          7,
-        "description":    "Fast pace, small targets, maximum scatter",
+    "ADV": {
+        "hit_prob":    0.50,
+        "interval":    (1.5, 2.5),
+        "scatter_mm":  40,
+        "description": "Fast pace, small targets, maximum pressure",
     },
 }
 
-# ─────────────────────────────────────────────
-#  DRILL SESSION — stateful shot tracker
-# ─────────────────────────────────────────────
+# Zone number (numpad layout) → board centre (y_mm, z_mm)
+# Board physical dimensions: 1525 mm wide × 1000 mm tall
+ZONE_CENTERS: dict[int, tuple[int, int]] = {
+    7: (254, 833), 8: (762, 833), 9: (1270, 833),
+    4: (254, 500), 5: (762, 500), 6: (1270, 500),
+    1: (254, 167), 2: (762, 167), 3: (1270, 167),
+}
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DRILL SESSION — stateful shot tracker
+# ─────────────────────────────────────────────────────────────────────────────
 @dataclass
 class DrillSession:
-    level: str = "beginner"
-    hits: int = 0
-    misses: int = 0
-    current_streak: int = 0
-    best_streak: int = 0
-    last_shot_ts: float = field(default_factory=time.time)
-    start_ts: float = field(default_factory=time.time)
+    drill_id:       str   = ""
+    active:         bool  = False   # gates shot recording; set by start/stop_drill
+    hits:           int   = 0
+    misses:         int   = 0
+    current_streak: int   = 0
+    best_streak:    int   = 0
+    start_ts:       float = field(default_factory=time.time)
 
-    # last shot details (populated after each shot)
-    last_impact_y: int = 0
-    last_impact_z: int = 0
-    last_target_zone: int = 0
+    # Last shot details (populated after each shot)
+    last_impact_y:    int = 0
+    last_impact_z:    int = 0
+    last_target_zone: int = 5   # default to centre zone
+
+    def level_prefix(self) -> str:
+        """Derive the 3-char level key from drill_id, e.g. 'BEG_01' → 'BEG'."""
+        return self.drill_id[:3] if self.drill_id else "BEG"
+
+    def get_config(self) -> dict:
+        return LEVEL_CONFIG.get(self.level_prefix(), LEVEL_CONFIG["BEG"])
+
+    def next_random_zone(self) -> int:
+        """Pick and store a new random zone (1–9). Backend owns this decision."""
+        self.last_target_zone = random.randint(1, 9)
+        return self.last_target_zone
 
     @property
     def total_shots(self) -> int:
@@ -98,57 +199,43 @@ class DrillSession:
 
     @property
     def accuracy_percentage(self) -> float:
-        if self.total_shots == 0:
-            return 0.0
-        return round(self.hits / self.total_shots * 100, 1)
+        return round(self.hits / max(1, self.total_shots) * 100, 1)
 
     @property
     def elapsed_seconds(self) -> float:
         return round(time.time() - self.start_ts, 1)
 
-    def record_shot(
-        self,
-        success: bool,
-        impact_y: int,
-        impact_z: int,
-        target_zone: int,
-    ) -> dict:
+    def record_shot(self, success: bool, impact_y: int, impact_z: int) -> dict:
         """Record one shot; returns a broadcast-ready event dict."""
-        self.last_shot_ts   = time.time()
-        self.last_impact_y  = impact_y
-        self.last_impact_z  = impact_z
-        self.last_target_zone = target_zone
+        self.last_impact_y = impact_y
+        self.last_impact_z = impact_z
 
         if success:
-            self.hits          += 1
+            self.hits           += 1
             self.current_streak += 1
-            self.best_streak    = max(self.best_streak, self.current_streak)
+            self.best_streak     = max(self.best_streak, self.current_streak)
         else:
-            self.misses        += 1
-            self.current_streak = 0
+            self.misses         += 1
+            self.current_streak  = 0
 
-        streak_bonus = self.current_streak >= 5  # 🔥 hot-streak flag
-
-        event = {
+        return {
             "event":           "shot_result",
             "success":         success,
-            "impact_y":        impact_y,
-            "impact_z":        impact_z,
-            "target_zone":     target_zone,
+            "impact_coords":   {"y": impact_y, "z": impact_z},
+            "target_zone":     self.last_target_zone,
             "hits":            self.hits,
             "misses":          self.misses,
             "total_shots":     self.total_shots,
             "accuracy":        self.accuracy_percentage,
             "current_streak":  self.current_streak,
             "best_streak":     self.best_streak,
-            "hot_streak":      streak_bonus,
             "elapsed_seconds": self.elapsed_seconds,
         }
-        return event
 
     def to_dict(self) -> dict:
         return {
-            "level":           self.level,
+            "drill_id":        self.drill_id,
+            "active":          self.active,
             "hits":            self.hits,
             "misses":          self.misses,
             "total_shots":     self.total_shots,
@@ -156,388 +243,356 @@ class DrillSession:
             "current_streak":  self.current_streak,
             "best_streak":     self.best_streak,
             "elapsed_seconds": self.elapsed_seconds,
+            "current_zone":    self.last_target_zone,
             "last_impact_y":   self.last_impact_y,
             "last_impact_z":   self.last_impact_z,
-            "last_target_zone":self.last_target_zone,
-            "level_config":    LEVEL_CONFIG[self.level],
+            "level_config":    self.get_config(),
         }
 
-    def reset(self, level: Optional[str] = None):
-        if level and level in LEVEL_CONFIG:
-            self.level = level
+    def reset(self) -> None:
         self.hits = self.misses = self.current_streak = self.best_streak = 0
         self.start_ts = time.time()
-        print(f"  🔄  Session reset — level: {self.level.upper()}")
+        self.last_target_zone = 5
 
 
-# ─────────────────────────────────────────────
-#  WEBSOCKET CONNECTION MANAGER
-# ─────────────────────────────────────────────
-
+# ─────────────────────────────────────────────────────────────────────────────
+# CONNECTION MANAGER
+# ─────────────────────────────────────────────────────────────────────────────
 class ConnectionManager:
     """Manages all active Phone UI WebSocket connections."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.active: list[WebSocket] = []
 
-    async def connect(self, ws: WebSocket):
+    async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
         self.active.append(ws)
-        print(f"  📱  Phone connected  — total clients: {len(self.active)}")
+        log.info("WS client connected (total: %d)", len(self.active))
 
-    def disconnect(self, ws: WebSocket):
-        self.active.remove(ws)
-        print(f"  📴  Phone disconnected — total clients: {len(self.active)}")
+    def disconnect(self, ws: WebSocket) -> None:
+        if ws in self.active:
+            self.active.remove(ws)
+        log.info("WS client disconnected (remaining: %d)", len(self.active))
 
-    async def broadcast(self, payload: dict):
-        """Send JSON payload to every connected client; drop dead connections."""
-        if not self.active:
-            return
-        msg = json.dumps(payload)
+    async def broadcast(self, payload: dict) -> None:
+        """Send JSON payload to every connected client; silently drop dead ones."""
         dead: list[WebSocket] = []
-        for ws in self.active:
+        for ws in list(self.active):
             try:
-                await ws.send_text(msg)
+                await ws.send_json(payload)
             except Exception:
                 dead.append(ws)
         for ws in dead:
-            self.active.remove(ws)
+            self.disconnect(ws)
 
-    async def send_personal(self, ws: WebSocket, payload: dict):
-        await ws.send_text(json.dumps(payload))
+    async def send(self, ws: WebSocket, payload: dict) -> None:
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            self.disconnect(ws)
 
 
-# ─────────────────────────────────────────────
-#  GLOBAL STATE  (module-level singletons)
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# SINGLETONS
+# ─────────────────────────────────────────────────────────────────────────────
+shm_bridge = SharedMemoryBridge()
+manager    = ConnectionManager()
+session    = DrillSession()
 
-manager  = ConnectionManager()
-session  = DrillSession()
-shm: Optional[SharedMemory] = None   # set during lifespan startup
 
-# ─────────────────────────────────────────────
-#  SHARED MEMORY HELPERS
-# ─────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# LIFESPAN
+# ─────────────────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log.info("╔══════════════════════════════════════════╗")
+    log.info("║   🏓  TT Trainer Brain — STARTING UP     ║")
+    log.info("╚══════════════════════════════════════════╝")
 
-def shm_read() -> tuple[int, int, int, int, int]:
-    """Read the CV struct from shared memory.
-    Returns (hit_recorded, success, impact_y, impact_z, target_zone).
+    shm_bridge.open()
+    poller_task    = asyncio.create_task(shm_poll_loop())
+    simulator_task = asyncio.create_task(mock_cv_loop())   # remove in production
+
+    log.info("🚀  All systems go — API ready")
+    yield
+
+    log.info("🛑  Shutting down ...")
+    poller_task.cancel()
+    simulator_task.cancel()
+    shm_bridge.close()
+    log.info("👋  TT Trainer Brain stopped")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BACKGROUND: SHM POLL LOOP  (60 Hz)
+# ─────────────────────────────────────────────────────────────────────────────
+async def shm_poll_loop() -> None:
     """
-    raw = bytes(shm.buf[:STRUCT_SIZE])
-    return struct.unpack_from(STRUCT_FMT, raw)
+    Polls shared memory at 60 Hz.  When the CV process sets hit_recorded=1
+    we acknowledge FIRST (clear the latch), then update the session and
+    broadcast — this order prevents double-reads if processing is slow.
 
+    The CV process runs at 120 fps; polling at 60 Hz halves CPU load with
+    no data loss because hit_recorded is a sticky latch.
+    """
+    log.info("🔁  SHM Poller started @ 60 Hz")
 
-def shm_clear_latch():
-    """Acknowledge the hit by setting hit_recorded = 0."""
-    struct.pack_into("<B", shm.buf, 0, 0)
-
-
-def shm_inject(
-    success: int,
-    impact_y: int,
-    impact_z: int,
-    target_zone: int,
-):
-    """Write a hit into shared memory (used by Mock CV Simulator & /inject_shot)."""
-    packed = struct.pack(STRUCT_FMT, 1, success, impact_y, impact_z, target_zone)
-    shm.buf[:STRUCT_SIZE] = packed
-
-
-# ─────────────────────────────────────────────
-#  ASYNC BACKGROUND POLLER  (60 Hz)
-# ─────────────────────────────────────────────
-
-async def shm_poller():
-    """Poll shared memory at 60 Hz; process hits as they arrive."""
-    print("  🔁  SHM Poller started @ 60 Hz — watching for CV hits …")
     while True:
         try:
-            hit_recorded, success, impact_y, impact_z, target_zone = shm_read()
+            frame = shm_bridge.read_frame()
+            if frame and session.active:
+                # Acknowledge before processing — fail-safe against double-reads
+                shm_bridge.acknowledge()
 
-            if hit_recorded == 1:
-                # --- Acknowledge FIRST to minimise double-reads ---
-                shm_clear_latch()
-
-                # --- Update session ---
-                event = session.record_shot(
-                    success=bool(success),
-                    impact_y=impact_y,
-                    impact_z=impact_z,
-                    target_zone=target_zone,
+                shot = session.record_shot(
+                    success  = bool(frame["success"]),
+                    impact_y = frame["impact_y"],
+                    impact_z = frame["impact_z"],
                 )
+                await manager.broadcast(shot)
 
-                # --- Broadcast to phones ---
-                await manager.broadcast(event)
-
-                # --- Terminal vibe ---
-                icon = "✅" if success else "❌"
-                print(
-                    f"  {icon}  Shot #{session.total_shots:>4} | "
-                    f"zone={target_zone} y={impact_y} z={impact_z} | "
-                    f"acc={session.accuracy_percentage}% | "
-                    f"streak={session.current_streak}"
-                    + (" 🔥" if event["hot_streak"] else "")
+                icon = "✅" if frame["success"] else "❌"
+                log.info(
+                    "%s  Shot #%d | zone=%d  y=%d z=%d | acc=%.1f%% | streak=%d",
+                    icon, session.total_shots, session.last_target_zone,
+                    frame["impact_y"], frame["impact_z"],
+                    session.accuracy_percentage, session.current_streak,
                 )
 
         except Exception as exc:
-            print(f"  ⚠️   Poller error: {exc}")
+            log.error("SHM poll error: %s", exc)
 
         await asyncio.sleep(POLL_INTERVAL)
 
 
-# ─────────────────────────────────────────────
-#  MOCK CV SIMULATOR  (dev mode)
-# ─────────────────────────────────────────────
-
-async def mock_cv_simulator(level: str = "beginner"):
+# ─────────────────────────────────────────────────────────────────────────────
+# BACKGROUND: MOCK CV SIMULATOR  (dev only — remove in production)
+# ─────────────────────────────────────────────────────────────────────────────
+async def mock_cv_loop() -> None:
     """
-    Simulates the CV process during development.
-    Randomly injects hits into shared memory at the level's shot_interval.
+    Simulates the CV process by writing to shared memory on a realistic cadence.
+    Uses ZONE_CENTERS + Gaussian scatter for physically meaningful coordinates.
+    The backend picks the zone here (next_random_zone) — mirroring production,
+    where this process writes the target zone into SHM before each shot.
     """
-    cfg = LEVEL_CONFIG.get(level, LEVEL_CONFIG["beginner"])
-    print(
-        f"  🏓  Mock CV Simulator running — level: {level.upper()} | "
-        f"interval: {cfg['shot_interval']}s | hit_prob: {cfg['hit_prob']}"
-    )
+    log.warning("Mock CV loop active — DEVELOPMENT MODE")
 
     while True:
-        await asyncio.sleep(cfg["shot_interval"] + random.uniform(-0.1, 0.1))
+        cfg = session.get_config()
+        await asyncio.sleep(random.uniform(*cfg["interval"]))
 
-        # Only inject if the latch is clear (don't overwrite unread hit)
-        hit_recorded, *_ = shm_read()
-        if hit_recorded == 1:
-            continue  # poller hasn't consumed the last hit yet
+        if not session.active:
+            continue
 
-        success      = int(random.random() < cfg["hit_prob"])
-        target_zone  = random.randint(0, cfg["zones"] - 1)
-        centre_y     = 200 + target_zone * 50
-        centre_z     = 150 + target_zone * 30
-        scatter      = cfg["target_scatter"]
-        impact_y     = max(0, min(65535, centre_y + random.randint(-scatter, scatter)))
-        impact_z     = max(0, min(65535, centre_z + random.randint(-scatter, scatter)))
+        # Skip if the previous hit has not been consumed yet
+        if shm_bridge.read_frame() is not None:
+            continue
 
-        shm_inject(success, impact_y, impact_z, target_zone)
+        # Backend owns zone randomisation
+        zone    = session.next_random_zone()
+        cy, cz  = ZONE_CENTERS[zone]
+        success = random.random() < cfg["hit_prob"]
+        sigma   = cfg["scatter_mm"]
 
+        if success:
+            # Hit: Gaussian scatter around the zone centre
+            y = int(cy + random.gauss(0, sigma))
+            z = int(cz + random.gauss(0, sigma * 0.6))
+        else:
+            # Miss: anywhere on the board, uniform
+            y = random.randint(0, 1525)
+            z = random.randint(0, 1000)
 
-# ─────────────────────────────────────────────
-#  APP LIFESPAN  (startup / shutdown)
-# ─────────────────────────────────────────────
+        y = max(0, min(1525, y))
+        z = max(0, min(1000, z))
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Create SHM, launch background tasks, clean up on exit."""
-    global shm
-
-    # ── STARTUP ──────────────────────────────
-    print()
-    print("╔══════════════════════════════════════════╗")
-    print("║   🏓  TT Trainer Brain — STARTING UP     ║")
-    print("╚══════════════════════════════════════════╝")
-
-    # Create (or attach to existing) shared memory block
-    try:
-        shm = SharedMemory(name=SHM_NAME, create=True, size=SHM_SIZE)
-        # Zero-initialise
-        shm.buf[:SHM_SIZE] = bytes(SHM_SIZE)
-        print(f"  🧠  SHM created  — name='{SHM_NAME}'  size={SHM_SIZE}B")
-    except FileExistsError:
-        shm = SharedMemory(name=SHM_NAME, create=False, size=SHM_SIZE)
-        print(f"  🧠  SHM attached — name='{SHM_NAME}'  size={SHM_SIZE}B")
-
-    # Launch 60 Hz poller
-    poller_task = asyncio.create_task(shm_poller())
-
-    # Launch Mock CV Simulator (dev mode — comment out in production)
-    simulator_task = asyncio.create_task(
-        mock_cv_simulator(level=session.level)
-    )
-
-    print("  🚀  All systems go — API ready\n")
-    yield  # ← app runs here
-
-    # ── SHUTDOWN ─────────────────────────────
-    print("\n  🛑  Shutting down …")
-    poller_task.cancel()
-    simulator_task.cancel()
-
-    try:
-        shm.close()
-        shm.unlink()
-        print(f"  🗑️   SHM '{SHM_NAME}' unlinked")
-    except Exception as exc:
-        print(f"  ⚠️   SHM cleanup warning: {exc}")
-
-    print("  👋  TT Trainer Brain stopped\n")
+        shm_bridge.write_mock_shot(success=success, y=y, z=z, zone=zone)
 
 
-# ─────────────────────────────────────────────
-#  FASTAPI APP
-# ─────────────────────────────────────────────
-
+# ─────────────────────────────────────────────────────────────────────────────
+# FASTAPI APP
+# ─────────────────────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="Smart Table Tennis Trainer — Brain API",
-    description="CV ↔ FastAPI ↔ Phone UI bridge for the IITGN TT Trainer project",
-    version="1.0.0",
+    title="TT Trainer API",
+    description="Smart Table Tennis Trainer — IITGN CV System",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
 
-# ─────────────────────────────────────────────
-#  REST ENDPOINTS
-# ─────────────────────────────────────────────
-
-@app.get("/api/health")
-async def health():
-    """Heartbeat endpoint — confirms the brain is alive."""
-    return {
-        "status":         "ok",
-        "shm_attached":   shm is not None,
-        "connected_phones": len(manager.active),
-        "session_shots":  session.total_shots,
-        "uptime_seconds": session.elapsed_seconds,
-    }
-
-
-@app.get("/api/session")
-async def get_session():
-    """Return the full current drill session stats."""
-    return session.to_dict()
-
-
-@app.post("/api/session/reset")
-async def reset_session(level: str = "beginner"):
-    """Reset the drill session (optionally change level)."""
-    if level not in LEVEL_CONFIG:
-        return JSONResponse(
-            status_code=400,
-            content={"error": f"Unknown level '{level}'. Choose from: {list(LEVEL_CONFIG)}"},
-        )
-    session.reset(level=level)
-    await manager.broadcast({"event": "session_reset", "level": level})
-    return {"status": "reset", "level": level}
-
-
-@app.post("/api/inject_shot")
-async def inject_shot(
-    success: int = 1,
-    impact_y: int = 200,
-    impact_z: int = 150,
-    target_zone: int = 0,
-):
-    """
-    Manually inject a shot into shared memory for testing.
-    The poller will pick this up within ~17 ms (next 60 Hz tick).
-
-    Params (query string):
-      success     : 1 = hit, 0 = miss
-      impact_y    : Y coord of ball impact (0–65535)
-      impact_z    : Z coord of ball impact (0–65535)
-      target_zone : target zone index
-    """
-    if shm is None:
-        return JSONResponse(status_code=503, content={"error": "SHM not ready"})
-
-    # Check latch — warn if previous hit wasn't consumed yet
-    hit_recorded, *_ = shm_read()
-    if hit_recorded == 1:
-        return JSONResponse(
-            status_code=409,
-            content={"error": "Previous hit not yet consumed by poller — try again in ~17ms"},
-        )
-
-    shm_inject(success, impact_y, impact_z, target_zone)
-    print(
-        f"  💉  Manual inject — success={success} y={impact_y} "
-        f"z={impact_z} zone={target_zone}"
-    )
-    return {
-        "status":      "injected",
-        "success":     success,
-        "impact_y":    impact_y,
-        "impact_z":    impact_z,
-        "target_zone": target_zone,
-        "note":        "Poller will process this within 17ms",
-    }
-
-
-@app.get("/api/levels")
-async def get_levels():
-    """Return all difficulty level configurations."""
-    return LEVEL_CONFIG
-
-
-# ─────────────────────────────────────────────
-#  WEBSOCKET ENDPOINT
-# ─────────────────────────────────────────────
-
-@app.websocket("/ws/phone")
-async def websocket_phone(ws: WebSocket):
+# ─────────────────────────────────────────────────────────────────────────────
+# WEBSOCKET
+# ─────────────────────────────────────────────────────────────────────────────
+@app.websocket("/ws")
+async def ws_endpoint(ws: WebSocket) -> None:
     """
     Phone UI connects here to receive real-time shot events.
 
-    Events sent by server:
-      { "event": "shot_result",  "success": bool, "accuracy": float, … }
-      { "event": "session_reset", "level": str }
-      { "event": "welcome",       "session": { … } }
+    Server → Phone events:
+      { "event": "shot_result",   "success": bool, "accuracy": float, ... }
+      { "event": "drill_started", "drill_id": str }
+      { "event": "drill_stopped", "hits": int, "accuracy": float, ... }
+      { "event": "welcome",       "session": { ... } }
 
-    Messages accepted from phone:
-      { "action": "reset", "level": "beginner" }
+    Phone → Server actions:
+      { "action": "start_drill", "drill_id": "BEG_01" }
+      { "action": "stop_drill" }
       { "action": "ping" }
     """
     await manager.connect(ws)
+    await manager.send(ws, {
+        "event":   "welcome",
+        "message": "Connected — TT Trainer / IITGN",
+        "session": session.to_dict(),
+    })
     try:
-        # Send current session state as welcome packet
-        await manager.send_personal(ws, {
-            "event":   "welcome",
-            "message": "🏓 Connected to TT Trainer Brain",
-            "session": session.to_dict(),
-        })
-
-        # Listen for commands from the phone
-        async for raw in ws.iter_text():
+        while True:
+            raw = await ws.receive_text()
             try:
-                msg = json.loads(raw)
-                action = msg.get("action")
-
-                if action == "ping":
-                    await manager.send_personal(ws, {"event": "pong"})
-
-                elif action == "reset":
-                    level = msg.get("level", session.level)
-                    if level in LEVEL_CONFIG:
-                        session.reset(level=level)
-                        await manager.broadcast({"event": "session_reset", "level": level})
-                    else:
-                        await manager.send_personal(ws, {
-                            "event": "error",
-                            "message": f"Unknown level: {level}",
-                        })
-
-                else:
-                    await manager.send_personal(ws, {
-                        "event":   "error",
-                        "message": f"Unknown action: {action}",
-                    })
-
+                payload = json.loads(raw)
             except json.JSONDecodeError:
-                await manager.send_personal(ws, {
-                    "event": "error", "message": "Invalid JSON",
-                })
-
+                await manager.send(ws, {"event": "error", "message": "Invalid JSON"})
+                continue
+            await handle_message(ws, payload)
     except WebSocketDisconnect:
         manager.disconnect(ws)
 
 
-# ─────────────────────────────────────────────
-#  ENTRY POINT  (optional: run directly)
-# ─────────────────────────────────────────────
+async def handle_message(ws: WebSocket, payload: dict) -> None:
+    action = payload.get("action", "")
 
+    # ── PING ─────────────────────────────────────────────────────────────────
+    if action == "ping":
+        await manager.send(ws, {"event": "pong", "ts": time.time()})
+        return
+
+    # ── START DRILL ──────────────────────────────────────────────────────────
+    # Expected payload: { "action": "start_drill", "drill_id": "BEG_01" }
+    if action == "start_drill":
+        drill_id = str(payload.get("drill_id", "BEG_01"))
+        prefix   = drill_id[:3]
+
+        if prefix not in LEVEL_CONFIG:
+            await manager.send(ws, {
+                "event":   "error",
+                "message": f"Unknown level prefix '{prefix}'. Valid: {list(LEVEL_CONFIG)}",
+            })
+            return
+
+        session.drill_id = drill_id
+        session.active   = True
+        session.reset()
+
+        log.info("Drill started: %s  (level: %s)", drill_id, prefix)
+
+        # ── UART NOTE ─────────────────────────────────────────────────────────
+        # In production, arm the ball launcher via the Raspberry Pi Pico here.
+        # Example with pyserial at 921,600 baud (16-byte packet ~0.14 ms):
+        #
+        #   import serial
+        #   pico = serial.Serial('/dev/ttyACM0', 921600, timeout=0.01)
+        #   pico.write(f"DRILL:{drill_id}\n".encode()); pico.flush()
+        # ─────────────────────────────────────────────────────────────────────
+
+        await manager.broadcast({
+            "event":    "drill_started",
+            "drill_id": drill_id,
+            "message":  f"Drill {drill_id} active — zones randomised by backend",
+        })
+        return
+
+    # ── STOP DRILL ───────────────────────────────────────────────────────────
+    if action == "stop_drill":
+        session.active = False
+        log.info(
+            "Drill stopped: hits=%d misses=%d best_streak=%d acc=%.1f%%",
+            session.hits, session.misses, session.best_streak,
+            session.accuracy_percentage,
+        )
+        await manager.broadcast({
+            "event":       "drill_stopped",
+            "hits":        session.hits,
+            "misses":      session.misses,
+            "best_streak": session.best_streak,
+            "accuracy":    session.accuracy_percentage,
+        })
+        return
+
+    await manager.send(ws, {"event": "error", "message": f"Unknown action: {action}"})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REST ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/api/health")
+async def health() -> dict:
+    """Heartbeat — confirms the brain is alive and SHM is attached."""
+    return {
+        "status":          "ok",
+        "shm_open":        shm_bridge._shm is not None,
+        "ws_clients":      len(manager.active),
+        "drill_active":    session.active,
+        "drill_id":        session.drill_id,
+        "elapsed_seconds": session.elapsed_seconds,
+    }
+
+
+@app.get("/api/session")
+async def get_session() -> dict:
+    """Return full current drill session stats."""
+    return session.to_dict()
+
+
+@app.get("/api/levels")
+async def get_levels() -> dict:
+    """Return all difficulty level configurations (useful for phone UI onboarding)."""
+    return LEVEL_CONFIG
+
+
+@app.post("/api/inject_shot")
+async def inject_shot(body: dict) -> dict:
+    """
+    Dev endpoint: inject a shot without hardware.
+    Backend still randomises the zone — consistent with production behaviour.
+
+    Body: { "success": true, "impact_coords": {"y": 762, "z": 500} }
+    The poller will process this within ~17 ms (next 60 Hz tick).
+    """
+    if not session.active:
+        return JSONResponse(
+            status_code=409,
+            content={"injected": False, "reason": "No active drill — send start_drill first"},
+        )
+
+    if shm_bridge.read_frame() is not None:
+        return JSONResponse(
+            status_code=409,
+            content={"injected": False, "reason": "Previous hit not yet consumed — retry in ~17 ms"},
+        )
+
+    zone    = session.next_random_zone()
+    cy, cz  = ZONE_CENTERS[zone]
+    success = bool(body.get("success", True))
+    coords  = body.get("impact_coords")
+    y = int(coords["y"]) if coords else cy
+    z = int(coords["z"]) if coords else cz
+
+    shm_bridge.write_mock_shot(success=success, y=y, z=z, zone=zone)
+    log.info("Manual inject — success=%s y=%d z=%d zone=%d", success, y, z, zone)
+    return {"injected": True, "zone": zone, "success": success, "y": y, "z": z}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENTRY POINT
+# ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import uvicorn
+    import sys
     uvicorn.run(
         "tt_trainer_backend:app",
         host="0.0.0.0",
         port=8000,
-        reload=False,
-        log_level="warning",   # suppress uvicorn noise; our prints do the job
+        workers=1,
+        loop="uvloop" if sys.platform != "win32" else "asyncio",
+        log_level="info",
+        access_log=False,
     )
