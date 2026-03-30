@@ -60,7 +60,7 @@ log = logging.getLogger("tt-trainer")
 #   10     22    bytes   reserved for future fields
 #
 SHM_NAME   = "tt_cv_bridge"
-SHM_SIZE   = 32
+SHM_SIZE   = 34
 SHM_FMT    = "<B B H H B 3x 22x"   # 10 bytes of payload + 22 reserved = 32
 SHM_FIELDS = ("hit_recorded", "success", "impact_y", "impact_z", "target_zone")
 
