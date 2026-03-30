@@ -82,7 +82,6 @@
             color: white;
         }
 
-        /* Emergency Button Styling */
         .giant-btn.emergency {
             background: #ff0000;
             color: white;
@@ -183,8 +182,10 @@
         <button class="giant-btn" onclick="showScreen('screen-level')">Start New Drill</button>
     </div>
 
+        <button class="giant-btn" onclick="showScreen('screen-level')">Start New Drill</button>
+    </div>
+
     <script>
-        // --- Drill Configurations (Now using Numeric IDs) ---
         const drillData = {
             beginner: [
                 { id: 1, name: "Forehand Counter" },
@@ -206,15 +207,43 @@
         let ws;
         let selectedDrill = null;
         
-        let currentStreak = 0;
-        let maxStreak = 0;
+        // These variables are now purely mirrors of what the backend says
         let totalShots = 0;
         let successfulHits = 0;
+        let currentStreak = 0;
+        let maxStreak = 0;
+        let backendAccuracy = 0; 
+        
+        // Velocity is the only thing we still track locally because the backend session doesn't store an array of past velocities yet.
         let velocityLog = [];
 
         const canvas = document.getElementById('tt-board');
         const ctx = canvas.getContext('2d');
         const scale = 0.4; 
+
+        // 🌟 SINGLE SOURCE OF TRUTH: Ask the backend for the exact score
+        async function syncStatsWithBackend() {
+            try {
+                const response = await fetch('/api/session');
+                if (!response.ok) return; 
+                
+                const sessionData = await response.json();
+
+                // Frontend does no math! It just accepts whatever the backend says.
+                totalShots = sessionData.total_shots || 0;
+                successfulHits = sessionData.hit_count || 0;
+                currentStreak = sessionData.streak || 0;
+                maxStreak = sessionData.best_streak || 0;
+                backendAccuracy = sessionData.accuracy || 0; 
+
+                // If this was called during a page refresh and a drill is active, show the active screen
+                if (sessionData.active && !document.getElementById('screen-active').classList.contains('active')) {
+                    showScreen('screen-active');
+                }
+            } catch (error) {
+                console.error("Could not sync with backend:", error);
+            }
+        }
 
         function showScreen(screenId) {
             document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -229,7 +258,6 @@
                 const btn = document.createElement('button');
                 btn.className = 'giant-btn';
                 btn.innerText = drill.name;
-                // Passes the numeric ID
                 btn.onclick = () => startDrill(drill.id);
                 container.appendChild(btn);
             });
@@ -239,10 +267,6 @@
 
         function startDrill(drillId) {
             selectedDrill = drillId;
-            currentStreak = 0;
-            maxStreak = 0;
-            totalShots = 0;
-            successfulHits = 0;
             velocityLog = [];
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -255,13 +279,14 @@
 
         function endDrill() {
             if(ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ action: "stop_drill" })); // Backend adds ID 99
+                ws.send(JSON.stringify({ action: "stop_drill" }));
             }
 
-            const accuracy = totalShots > 0 ? Math.round((successfulHits / totalShots) * 100) : 0;
+            // We still calculate average velocity locally
             const avgVel = velocityLog.length > 0 ? Math.round(velocityLog.reduce((a, b) => a + b, 0) / velocityLog.length) : 0;
 
-            document.getElementById('sum-accuracy').innerText = `${accuracy}%`;
+            // Use the stats straight from the Python backend!
+            document.getElementById('sum-accuracy').innerText = `${backendAccuracy}%`;
             document.getElementById('sum-streak').innerText = maxStreak;
             document.getElementById('sum-vel').innerText = avgVel;
             document.getElementById('sum-total').innerText = totalShots;
@@ -274,7 +299,6 @@
             if(ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({ action: "stop_drill" })); 
             }
-            // Skip summary, instantly wipe canvas, and go to main menu
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             showScreen('screen-level');
         }
@@ -285,38 +309,21 @@
             ws.onopen = () => {
                 document.getElementById('status').innerText = "WS: Connected";
                 document.getElementById('status').style.color = "var(--neon-green)";
-                
-                // NEW: Request state immediately after opening connection (Solves Refresh Bug)
-                ws.send(JSON.stringify({ action: "get_state" }));
             };
 
             ws.onmessage = (event) => {
                 const data = JSON.parse(event.data);
                 
-                if (data.event === "sync_state") {
-                    if (data.state.is_running) {
-                        totalShots = data.state.total_shots;
-                        successfulHits = data.state.successful_hits;
-                        currentStreak = data.state.current_streak;
-                        maxStreak = data.state.max_streak;
-                        velocityLog = data.state.velocity_log;
-                        selectedDrill = data.state.drill_id;
-                        showScreen('screen-active');
-                    }
-                }
-                else if (data.event === "shot_result" && document.getElementById('screen-active').classList.contains('active')) {
-                    totalShots++;
+                if (data.event === "shot_result" && document.getElementById('screen-active').classList.contains('active')) {
+                    
+                    // 1. Draw the physical impact on the canvas
+                    drawImpact(data.impact_coords.y, data.impact_coords.z, data.success);
+                    
+                    // 2. Track velocity locally
                     if (data.velocity) velocityLog.push(data.velocity);
 
-                    if (data.success) {
-                        successfulHits++;
-                        currentStreak++;
-                        if (currentStreak > maxStreak) maxStreak = currentStreak;
-                    } else {
-                        currentStreak = 0;
-                    }
-
-                    drawImpact(data.impact_coords.y, data.impact_coords.z, data.success);
+                    // 3. Ask the backend for the updated official score!
+                    syncStatsWithBackend();
                 }
             };
 
@@ -342,6 +349,8 @@
             ctx.shadowBlur = 0; 
         }
 
+        // Boot up and immediately ask the backend for the current state in case of a refresh
+        syncStatsWithBackend();
         initWebSocket();
     </script>
 </body>
