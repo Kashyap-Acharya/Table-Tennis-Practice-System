@@ -205,31 +205,41 @@ class DrillSession:
     def elapsed_seconds(self) -> float:
         return round(time.time() - self.start_ts, 1)
 
+    # (ONLY showing modified + relevant sections — everything else remains SAME)
+
+# ============================
+# 🔥 1. MODIFY record_shot()
+# ============================
     def record_shot(self, success: bool, impact_y: int, impact_z: int) -> dict:
-        """Record one shot; returns a broadcast-ready event dict."""
         self.last_impact_y = impact_y
         self.last_impact_z = impact_z
-
+        
         if success:
-            self.hits           += 1
+            self.hits += 1
             self.current_streak += 1
-            self.best_streak     = max(self.best_streak, self.current_streak)
+            self.best_streak = max(self.best_streak, self.current_streak)
         else:
-            self.misses         += 1
-            self.current_streak  = 0
+            self.misses += 1
+            self.current_streak = 0
 
         return {
-            "event":           "shot_result",
-            "success":         success,
-            "impact_coords":   {"y": impact_y, "z": impact_z},
-            "target_zone":     self.last_target_zone,
-            "hits":            self.hits,
-            "misses":          self.misses,
-            "total_shots":     self.total_shots,
-            "accuracy":        self.accuracy_percentage,
-            "current_streak":  self.current_streak,
-            "best_streak":     self.best_streak,
-            "elapsed_seconds": self.elapsed_seconds,
+            "event": "shot_result",
+            "success": success,
+            "impact_coords": {"y": impact_y, "z": impact_z},
+            # New system fields
+            "target_zone": self.last_target_zone,
+            "hits": self.hits,
+            "misses": self.misses,
+            "total_shots": self.total_shots,
+            "accuracy": self.accuracy_percentage,
+            "current_streak": self.current_streak,
+            "best_streak": self.best_streak,
+
+            "hit_count": self.hits,
+            "streak": self.current_streak,
+
+        # Mock velocity for frontend
+            "velocity": random.randint(40, 95)
         }
 
     def to_dict(self) -> dict:
@@ -423,61 +433,112 @@ app = FastAPI(
 # ─────────────────────────────────────────────────────────────────────────────
 # WEBSOCKET
 # ─────────────────────────────────────────────────────────────────────────────
+# ============================
+# 3. MODIFY WebSocket connect
+# ============================
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket) -> None:
-    """
-    Phone UI connects here to receive real-time shot events.
-
-    Server → Phone events:
-      { "event": "shot_result",   "success": bool, "accuracy": float, ... }
-      { "event": "drill_started", "drill_id": str }
-      { "event": "drill_stopped", "hits": int, "accuracy": float, ... }
-      { "event": "welcome",       "session": { ... } }
-
-    Phone → Server actions:
-      { "action": "start_drill", "drill_id": "BEG_01" }
-      { "action": "stop_drill" }
-      { "action": "ping" }
-    """
     await manager.connect(ws)
+
+    # Send sync immediately (IMPORTANT)
     await manager.send(ws, {
-        "event":   "welcome",
-        "message": "Connected — TT Trainer / IITGN",
-        "session": session.to_dict(),
+        "event": "sync_state",
+        "state": {
+            "active": session.active,
+            "drill_id": session.drill_id,
+            "total_shots": session.total_shots,
+            "hit_count": session.hits,
+            "streak": session.current_streak,
+            "best_streak": session.best_streak,
+            "accuracy": session.accuracy_percentage
+        }
     })
+
     try:
         while True:
             raw = await ws.receive_text()
-            try:
-                payload = json.loads(raw)
-            except json.JSONDecodeError:
-                await manager.send(ws, {"event": "error", "message": "Invalid JSON"})
-                continue
+            payload = json.loads(raw)
             await handle_message(ws, payload)
+
     except WebSocketDisconnect:
         manager.disconnect(ws)
 
-
+# ============================
+# 2. MODIFY handle_message()
+# ============================
 async def handle_message(ws: WebSocket, payload: dict) -> None:
     action = payload.get("action", "")
 
-    # ── PING ─────────────────────────────────────────────────────────────────
-    if action == "ping":
-        await manager.send(ws, {"event": "pong", "ts": time.time()})
+    # ✅ GET STATE (NEW)
+    if action == "get_state":
+        await manager.send(ws, {
+            "event": "sync_state",
+            "state": {
+                "active": session.active,
+                "drill_id": session.drill_id,
+                "total_shots": session.total_shots,
+                "hit_count": session.hits,
+                "streak": session.current_streak,
+                "best_streak": session.best_streak,
+                "accuracy": session.accuracy_percentage
+            }
+        })
         return
 
-    # ── START DRILL ──────────────────────────────────────────────────────────
-    # Expected payload: { "action": "start_drill", "drill_id": "BEG_01" }
+    # ── START DRILL ──
     if action == "start_drill":
-        drill_id = str(payload.get("drill_id", "BEG_01"))
-        prefix   = drill_id[:3]
+
+        raw_id = payload.get("drill_id", "BEG_01")
+
+        # 🔥 Accept numeric IDs
+        if isinstance(raw_id, int):
+            mapping = {
+                1: "BEG_01", 2: "BEG_02", 3: "BEG_03",
+                4: "INT_01", 5: "INT_02", 6: "INT_03",
+                7: "ADV_01", 8: "ADV_02", 9: "ADV_03",
+            }
+            drill_id = mapping.get(raw_id, "BEG_01")
+        else:
+            drill_id = str(raw_id)
+
+        prefix = drill_id[:3]
 
         if prefix not in LEVEL_CONFIG:
             await manager.send(ws, {
-                "event":   "error",
-                "message": f"Unknown level prefix '{prefix}'. Valid: {list(LEVEL_CONFIG)}",
+                "event": "error",
+                "message": f"Invalid drill_id: {drill_id}"
             })
             return
+
+        session.drill_id = drill_id
+        session.active = True
+        session.reset()
+
+        await manager.broadcast({
+            "event": "drill_started",
+            "drill_id": drill_id
+        })
+        return
+
+    # ── STOP DRILL ──
+    if action == "stop_drill":
+        session.active = False
+
+        await manager.broadcast({
+            "event": "drill_stopped",
+            "hit_count": session.hits,
+            "streak": session.best_streak,
+            "accuracy": session.accuracy_percentage,
+            "total_shots": session.total_shots
+        })
+        return
+
+    # ── UNKNOWN ──
+    await manager.send(ws, {
+        "event": "error",
+        "message": f"Unknown action: {action}"
+    })
+
 
         session.drill_id = drill_id
         session.active   = True
@@ -537,10 +598,21 @@ async def health() -> dict:
     }
 
 
+# ============================
+# 4. MODIFY /api/session
+# ============================
 @app.get("/api/session")
-async def get_session() -> dict:
-    """Return full current drill session stats."""
-    return session.to_dict()
+async def get_session():
+    return {
+        "active": session.active,
+        "drill_id": session.drill_id,
+        "total_shots": session.total_shots,
+        "hit_count": session.hits,
+        "streak": session.current_streak,
+        "best_streak": session.best_streak,
+        "accuracy": session.accuracy_percentage
+    }
+
 
 
 @app.get("/api/levels")
