@@ -226,9 +226,10 @@ class DrillSession:
             "event": "shot_result",
             "success": success,
             "impact_coords": {"y": impact_y, "z": impact_z},
+            
             # New system fields
             "target_zone": self.last_target_zone,
-            "hits": self.hits,
+            "hits_count": self.hits,
             "misses": self.misses,
             "total_shots": self.total_shots,
             "accuracy": self.accuracy_percentage,
@@ -469,7 +470,7 @@ async def ws_endpoint(ws: WebSocket) -> None:
 async def handle_message(ws: WebSocket, payload: dict) -> None:
     action = payload.get("action", "")
 
-    # ✅ GET STATE (NEW)
+    # ── GET STATE ──
     if action == "get_state":
         await manager.send(ws, {
             "event": "sync_state",
@@ -487,10 +488,8 @@ async def handle_message(ws: WebSocket, payload: dict) -> None:
 
     # ── START DRILL ──
     if action == "start_drill":
-
         raw_id = payload.get("drill_id", "BEG_01")
 
-        # 🔥 Accept numeric IDs
         if isinstance(raw_id, int):
             mapping = {
                 1: "BEG_01", 2: "BEG_02", 3: "BEG_03",
@@ -538,48 +537,6 @@ async def handle_message(ws: WebSocket, payload: dict) -> None:
         "event": "error",
         "message": f"Unknown action: {action}"
     })
-
-
-        session.drill_id = drill_id
-        session.active   = True
-        session.reset()
-
-        log.info("Drill started: %s  (level: %s)", drill_id, prefix)
-
-        # ── UART NOTE ─────────────────────────────────────────────────────────
-        # In production, arm the ball launcher via the Raspberry Pi Pico here.
-        # Example with pyserial at 921,600 baud (16-byte packet ~0.14 ms):
-        #
-        #   import serial
-        #   pico = serial.Serial('/dev/ttyACM0', 921600, timeout=0.01)
-        #   pico.write(f"DRILL:{drill_id}\n".encode()); pico.flush()
-        # ─────────────────────────────────────────────────────────────────────
-
-        await manager.broadcast({
-            "event":    "drill_started",
-            "drill_id": drill_id,
-            "message":  f"Drill {drill_id} active — zones randomised by backend",
-        })
-        return
-
-    # ── STOP DRILL ───────────────────────────────────────────────────────────
-    if action == "stop_drill":
-        session.active = False
-        log.info(
-            "Drill stopped: hits=%d misses=%d best_streak=%d acc=%.1f%%",
-            session.hits, session.misses, session.best_streak,
-            session.accuracy_percentage,
-        )
-        await manager.broadcast({
-            "event":       "drill_stopped",
-            "hits":        session.hits,
-            "misses":      session.misses,
-            "best_streak": session.best_streak,
-            "accuracy":    session.accuracy_percentage,
-        })
-        return
-
-    await manager.send(ws, {"event": "error", "message": f"Unknown action: {action}"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
