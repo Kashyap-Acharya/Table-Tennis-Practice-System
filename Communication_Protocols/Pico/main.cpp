@@ -126,6 +126,22 @@ void feedBall() {
     feederStepper.step(-pushSteps);
 }
 
+void resetToDefault() {
+    // 1. Turn off LEDs
+    strip.clear();
+    strip.show();
+
+    // 2. Spin down motors
+    escM1.writeMicroseconds(1000);
+    escM2.writeMicroseconds(1000);
+    escM3.writeMicroseconds(1000);
+
+    // 3. Reset Servos (Pitch to 0, Yaw to 0/Center)
+    int p_servo = map(0.0, PITCH_MAP[0], PITCH_MAP[1], PITCH_MAP[2], PITCH_MAP[3]);
+    int y_servo = map(0.0, YAW_MAP[0], YAW_MAP[1], YAW_MAP[2], YAW_MAP[3]);
+    pitchServo.write(p_servo);
+    yawServo.write(y_servo);
+}
 // ==============================================================================
 // 6. MAIN EXECUTION LOGIC
 // ==============================================================================
@@ -204,6 +220,13 @@ void loop() {
             
             // Fire!
             executeShot(pitch, yaw, m1, m2, m3, zone_id);
+        }
+
+        if (packet.charAt(0) == 'S') {
+        // ... sscanf and executeShot() logic ...
+        } 
+        else if (packet.charAt(0) == 'D') {
+        resetToDefault();
         }
     }
 }
