@@ -21,9 +21,9 @@ This directory contains the C++ codebase for the Raspberry Pi Pico. The Pico act
 - [ ] **IR Sensor State:** Confirm if your IR beam breaker reads `LOW` or `HIGH` when the beam is broken, and update the `digitalRead` check in `feedBall()` accordingly.
 
 ### Target Screen (LEDs)
-- [ ] Verify `NUM_COLS` (Vertical strips).
+- [x] Verify `NUM_COLS` (Vertical strips).
 - [ ] Verify `ZONES_PER_COL` (How many hit-zones per strip).
-- [ ] Verify `LEDS_PER_STRIP` (How many physical LEDs on a single vertical track).
+- [x] Verify `LEDS_PER_STRIP` (How many physical LEDs on a single vertical track).
 
 ---
 
