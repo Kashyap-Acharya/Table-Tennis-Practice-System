@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║          IITGN — SMART TABLE TENNIS TRAINER  /  tt_trainer_backend.py   ║
+║          IITGN — SMART TABLE TENNIS TRAINER                              ║
 ║          FastAPI  ·  WebSocket  ·  Shared Memory Bridge                  ║
 ║                                                                          ║
 ║  Architecture:                                                           ║
@@ -33,7 +33,7 @@ from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOGGING
@@ -223,24 +223,17 @@ class DrillSession:
             self.current_streak = 0
 
         return {
-            "event": "shot_result",
-            "success": success,
-            "impact_coords": {"y": impact_y, "z": impact_z},
-            
-            # New system fields
-            "target_zone": self.last_target_zone,
-            "hits_count": self.hits,
-            "misses": self.misses,
-            "total_shots": self.total_shots,
-            "accuracy": self.accuracy_percentage,
-            "current_streak": self.current_streak,
-            "best_streak": self.best_streak,
-
-            "hit_count": self.hits,
-            "streak": self.current_streak,
-
-        # Mock velocity for frontend
-            "velocity": random.randint(40, 95)
+            "event":          "shot_result",
+            "success":        success,
+            "impact_coords":  {"y": impact_y, "z": impact_z},
+            "target_zone":    self.last_target_zone,
+            # Running stats — frontend reads these directly, no HTTP roundtrip needed
+            "hit_count":      self.hits,
+            "total_shots":    self.total_shots,
+            "accuracy":       self.accuracy_percentage,
+            "streak":         self.current_streak,
+            "best_streak":    self.best_streak,
+            "velocity":       random.randint(40, 95),   # mock; replace with CV data in production
         }
 
     def to_dict(self) -> dict:
@@ -542,6 +535,13 @@ async def handle_message(ws: WebSocket, payload: dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # REST ENDPOINTS
 # ─────────────────────────────────────────────────────────────────────────────
+@app.get("/")
+async def get_dashboard() -> HTMLResponse:
+    """Serve the phone UI dashboard."""
+    with open("index.html", "r") as f:
+        return HTMLResponse(f.read())
+
+
 @app.get("/api/health")
 async def health() -> dict:
     """Heartbeat — confirms the brain is alive and SHM is attached."""
