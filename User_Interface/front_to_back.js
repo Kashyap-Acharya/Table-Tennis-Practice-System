@@ -1,83 +1,107 @@
+/**
+ * Table Tennis Robot — WebSocket Command Helpers
+ *
+ * These functions wrap raw WebSocket sends with UI feedback.
+ * `ws` is declared in index.html and lives in the shared global scope.
+ *
+ * Element IDs used here must match index.html:
+ *   #status      — connection / command status label in the header
+ *   .giant-btn   — all tappable drill buttons
+ *
+ * Action names must match server.py handle_message():
+ *   "start_drill" { drill_id: int }  — maps int 1-9 to "BEG/INT/ADV_0N" server-side
+ *   "stop_drill"                     — stops drill; server broadcasts drill_stopped
+ *   "get_state"                      — server replies with sync_state event
+ */
+
+// ─── Internal helper ────────────────────────────────────────────────────────
 
 /**
- * Table Tennis Robot - Frontend API Client
- * Handles communication between the HTML UI and the Raspberry Pi FastAPI server.
- */
+ * Set the header status label (#status) text and colour.
+ */
+function _setStatus(text, colour) {
+    const el = document.getElementById('status');
+    if (!el) return;
+    const colourMap = {
+        green:  'var(--neon-green)',
+        orange: 'orange',
+        red:    'var(--neon-red)',
+        white:  'var(--text-main)',
+    };
+    el.innerText = text;
+    el.style.color = colourMap[colour] || colour;
+}
 
-async function sendDrillCommand(drillId) {
-    const statusBox = document.getElementById('status-box');
-    const buttons = document.querySelectorAll('.drill-btn');
-    
-    // 1. UI Update & Global Anti-Spam
-    // Lock all buttons immediately so the user can't rapid-fire commands
-    buttons.forEach(btn => btn.disabled = true); 
-    statusBox.innerText = `⚙️ Sending Command ${drillId}...`; 
-    statusBox.style.color = "orange";
+/**
+ * Guard: returns true and shows an error if the WebSocket is not ready.
+ */
+function _wsNotReady() {
+    if (typeof ws === 'undefined' || ws.readyState !== WebSocket.OPEN) {
+        _setStatus('WS: Not Connected', 'red');
+        return true;
+    }
+    return false;
+}
 
-    // 2. The Type-Safe Payload
-    // Forces the ID to be an integer so Python doesn't crash
-    const payload = {
-        drill_id: Number(drillId) 
-    };
 
-    // 3. The Network Timeout (5 seconds max)
-    // Prevents the browser from hanging forever if the Wi-Fi drops
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+// ─── Public API ──────────────────────────────────────────────────────────────
 
-    try {
-        // 4. Send the POST request to the backend
-        const response = await fetch('/api/command', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(payload),
-            signal: controller.signal 
-        });
+/**
+ * Send a drill start or stop command over the WebSocket.
+ *
+ * For drill_id 99 (legacy emergency stop path) it sends stop_drill.
+ * For all other IDs it sends start_drill so the server state machine resets.
+ *
+ * @param {number|string} drillId  — integer 1-9, or 99 for emergency stop
+ */
+function sendDrillCommand(drillId) {
+    const drillIdInt = Number(drillId);
+    const buttons    = document.querySelectorAll('.giant-btn');
 
-        // 5. Handle Response & Browser Memory
-        if (response.ok) {
-            statusBox.innerText = `✅ Success: Executing Drill ${drillId}`; 
-            statusBox.style.color = "#00ff00";
+    // 1. Lock all buttons immediately — prevent rapid-fire taps
+    buttons.forEach(btn => btn.disabled = true);
+    _setStatus(`⚙️ Sending Command ${drillIdInt}...`, 'orange');
 
-            // If it's the Stop command (99), clear memory. Otherwise, remember the drill is running.
-            if (payload.drill_id === 99) {
-                localStorage.removeItem("drillRunning"); 
-            } else {
-                localStorage.setItem("drillRunning", "true"); 
-            }
+    // 2. Abort if socket is not ready
+    if (_wsNotReady()) {
+        buttons.forEach(btn => btn.disabled = false);
+        return;
+    }
 
-        } else {
-            statusBox.innerText = `❌ Server Error (Code: ${response.status})`; 
-            statusBox.style.color = "red";
-        }
+    try {
+        // 3. Route to the correct server action
+        if (drillIdInt === 99) {
+            ws.send(JSON.stringify({ action: "stop_drill" }));
+        } else {
+            // start_drill: server maps int -> "BEG_01" etc. and resets session state
+            ws.send(JSON.stringify({ action: "start_drill", drill_id: drillIdInt }));
+        }
 
-    } catch (error) {
-        // 6. Handle Network Drop or Timeout
-        if (error.name === 'AbortError') {
-            statusBox.innerText = `⏳ Request Timed Out. Pi took too long!`;
-        } else {
-            statusBox.innerText = `❌ Network Error: Could not connect to the Pi.`;
-        }
-        statusBox.style.color = "red";
-        console.error("Fetch error:", error);
-        
-    } finally {
-        // 7. Cleanup & Hardware Cooldown
-        clearTimeout(timeoutId); 
-        
-        statusBox.innerText += " (Cooling down...)";
-        
-        // Wait 3 seconds before unlocking the UI to give physical motors time to adjust
-        setTimeout(() => {
-            buttons.forEach(btn => btn.disabled = false);
-            
-            // Reset the status text to ready
-            if (statusBox.innerText.includes("Cooling down")) {
-                statusBox.innerText = "System Ready";
-                statusBox.style.color = "white"; // Change to match your UI's default text color
-            }
-        }, 3000);
-    }
+        _setStatus(`✅ Command Sent: Drill ${drillIdInt}`, 'green');
+
+    } catch (err) {
+        _setStatus(`❌ Send Failed: ${err.message}`, 'red');
+        console.error("WS send error:", err);
+    } finally {
+        // 4. Hardware cooldown — give motors time to respond before next command
+        const currentText = document.getElementById('status').innerText;
+        _setStatus(currentText + ' (Cooling down...)', 'orange');
+
+        setTimeout(() => {
+            buttons.forEach(btn => btn.disabled = false);
+            const el = document.getElementById('status');
+            if (el && el.innerText.includes('Cooling down')) {
+                _setStatus('WS: Connected', 'green');
+            }
+        }, 3000);
+    }
+}
+
+/**
+ * Request a full state sync from the server.
+ * The server replies with a "sync_state" event handled in index.html onmessage.
+ */
+function requestStateSync() {
+    if (_wsNotReady()) return;
+    ws.send(JSON.stringify({ action: "get_state" }));
 }
