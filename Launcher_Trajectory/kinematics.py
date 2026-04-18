@@ -28,8 +28,14 @@ G            = 9.787   # m/s²   gravitational acceleration
 WHEEL_RADIUS = 0.025    # m      launcher wheel radius (30 mm — adjust to hardware)
 RPM_PER_RAD  = 60.0 / (2.0 * math.pi)   # conversion factor
 
-# Wheel offsets for 3-wheeled omni configuration (degrees from forward axis)
-WHEEL_ANGLES_DEG = [90.0, 210.0, 330.0]   # 120° apart, first wheel at 90°
+# Wheel offsets for 3-wheeled omni configuration (degrees from forward axis +X,
+# measured in the YZ plane — the plane perpendicular to ball travel).
+# Physical layout: Straight "Y" configuration (viewed from front)
+# 0° is Right, 90° is Up, 180° is Left
+#   Wheel 1: 270° — Bottom
+#   Wheel 2: 150° — Top-Left
+#   Wheel 3:  30° — Top-Right
+WHEEL_ANGLES_DEG = [270,150,30]   # 120° apart, first wheel at 90°
 WHEEL_ANGLES_RAD = [math.radians(a) for a in WHEEL_ANGLES_DEG]
 
 
@@ -159,44 +165,42 @@ def calculate_motor_rpms(V, w1, w2):
     Map forward velocity and spin commands to motor RPMs for a
     3-wheeled omni-wheel launcher configuration.
 
-    Wheel layout (offset by 120°):
-      Wheel 1: 90°   (left)
-      Wheel 2: 210°  (lower-right)
-      Wheel 3: 330°  (upper-right)
+    Physical layout: Straight "Y" configuration
+      Wheel 1: Bottom    (270°)
+      Wheel 2: Top-Left  (150°)
+      Wheel 3: Top-Right (30°)
 
-    Each wheel's tangential velocity contribution:
-      v_wheel_i = V * cos(θ_i) + w1 * R_ball (topspin contribution)
-                  + w2 * R_ball * sin(θ_i)    (sidespin contribution)
+    Each wheel's tangential velocity contribution is derived from the rigid body 
+    kinematics cross product (V_contact = V_center + w x r):
+    
+      v_wheel_i = V + R_ball * (w1 * sin(θ_i) + w2 * cos(θ_i))
 
-    Then RPM = (tangential_velocity / wheel_radius) * (60 / 2π)
+    This gracefully handles the sine/cosine projections exactly as derived:
+      - Bottom wheel (270°): pure V - w1*R
+      - Top wheels: V + w1*R*sin(30°) ± w2*R*cos(30°)
 
     Parameters
     ----------
     V  : float   — desired ball forward speed (m/s)
-    w1 : float   — topspin  (rad/s)
-    w2 : float   — sidespin (rad/s)
+    w1 : float   — topspin  (rad/s, about local +Y axis)
+    w2 : float   — sidespin (rad/s, about local +Z axis)
 
     Returns
     -------
     (M1_RPM, M2_RPM, M3_RPM) : tuple of int   — motor RPMs (rounded to nearest integer)
     """
-    BALL_RADIUS = 0.02  # m — ball radius for spin-to-surface-velocity conversion
+    BALL_RADIUS = 0.02  # m — table tennis ball radius
 
     rpms = []
     for angle in WHEEL_ANGLES_RAD:
-        # Forward velocity component at this wheel's orientation
-        v_forward = V
-        # Topspin adds a surface velocity equal to w1 * ball_radius
-        # (same direction for all wheels — uniformly adds backspin or topspin)
-        v_topspin = w1 * BALL_RADIUS
-
-        # Sidespin adds a differential velocity based on wheel's lateral position
-        v_sidespin = w2 * BALL_RADIUS * math.sin(angle)
-
+        # Calculate the rotational contribution using exact rigid body kinematics
+        # sin() maps to the Z-axis (topspin effect), cos() maps to the Y-axis (sidespin effect)
+        v_spin_effect = BALL_RADIUS * (w1 * math.sin(angle) + w2 * math.cos(angle))
+        
         # Total tangential velocity at this wheel
-        v_tangential = v_forward_component + v_topspin + v_sidespin
+        v_tangential = V + v_spin_effect
 
-        # Convert to RPM
+        # Convert surface velocity to Motor RPM
         rpm = (v_tangential / WHEEL_RADIUS) * RPM_PER_RAD
         rpms.append(int(round(rpm)))
 
