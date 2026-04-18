@@ -180,7 +180,7 @@ def calculate_motor_rpms(V, w1, w2):
     -------
     (M1_RPM, M2_RPM, M3_RPM) : tuple of int   — motor RPMs (rounded to nearest integer)
     """
-    BALL_RADIUS = 0.04  # m — ball radius for spin-to-surface-velocity conversion
+    BALL_RADIUS = 0.02  # m — ball radius for spin-to-surface-velocity conversion
 
     rpms = []
     for angle in WHEEL_ANGLES_RAD:
