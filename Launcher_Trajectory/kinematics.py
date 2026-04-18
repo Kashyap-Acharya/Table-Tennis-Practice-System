@@ -25,7 +25,7 @@ import math
 # Physical constants
 # ──────────────────────────────────────────────
 G            = 9.81    # m/s²   gravitational acceleration
-WHEEL_RADIUS = 0.03    # m      launcher wheel radius (30 mm — adjust to hardware)
+WHEEL_RADIUS = 0.025    # m      launcher wheel radius (30 mm — adjust to hardware)
 RPM_PER_RAD  = 60.0 / (2.0 * math.pi)   # conversion factor
 
 # Wheel offsets for 3-wheeled omni configuration (degrees from forward axis)
