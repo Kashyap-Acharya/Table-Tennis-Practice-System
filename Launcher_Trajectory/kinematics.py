@@ -24,7 +24,7 @@ import math
 # ──────────────────────────────────────────────
 # Physical constants
 # ──────────────────────────────────────────────
-G            = 9.81    # m/s²   gravitational acceleration
+G            = 9.787   # m/s²   gravitational acceleration
 WHEEL_RADIUS = 0.025    # m      launcher wheel radius (30 mm — adjust to hardware)
 RPM_PER_RAD  = 60.0 / (2.0 * math.pi)   # conversion factor
 
@@ -180,7 +180,7 @@ def calculate_motor_rpms(V, w1, w2):
     -------
     (M1_RPM, M2_RPM, M3_RPM) : tuple of int   — motor RPMs (rounded to nearest integer)
     """
-    BALL_RADIUS = 0.02  # m — ball radius for spin-to-surface-velocity conversion
+    BALL_RADIUS = 0.04  # m — ball radius for spin-to-surface-velocity conversion
 
     rpms = []
     for angle in WHEEL_ANGLES_RAD:
