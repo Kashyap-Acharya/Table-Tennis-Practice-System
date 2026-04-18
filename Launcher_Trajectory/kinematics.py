@@ -185,8 +185,7 @@ def calculate_motor_rpms(V, w1, w2):
     rpms = []
     for angle in WHEEL_ANGLES_RAD:
         # Forward velocity component at this wheel's orientation
-        v_forward_component = V * math.cos(angle)
-
+        v_forward = V
         # Topspin adds a surface velocity equal to w1 * ball_radius
         # (same direction for all wheels — uniformly adds backspin or topspin)
         v_topspin = w1 * BALL_RADIUS
