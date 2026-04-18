@@ -1,4 +1,4 @@
-# T4 Trainer — Launcher Trajectory
+# T4 Trainer - Launcher Trajectory
 
 ## System Overview
 
@@ -12,13 +12,13 @@ position            using physics simulation                and servos
 ```
 
 This repo takes as input:
-- `(target_X, target_Y)` — where the ball should land on the table (metres)
-- `V` — desired ball launch speed (m/s)
-- `w1, w2` — desired topspin and sidespin (rad/s)
+- `(target_X, target_Y)` - where the ball should land on the table (metres)
+- `V` - desired ball launch speed (m/s)
+- `w1, w2` - desired topspin and sidespin (rad/s)
 
 And produces:
-- `(pitch, yaw)` — optimal servo angles (degrees)
-- `(M1_RPM, M2_RPM, M3_RPM)` — motor speeds for the 3-wheel launcher
+- `(pitch, yaw)` - optimal servo angles (degrees)
+- `(M1_RPM, M2_RPM, M3_RPM)` - motor speeds for the 3-wheel launcher
 
 ---
 
@@ -55,13 +55,13 @@ The repo is split into three layers, each with a single responsibility:
 
 ### kinematics.py
 
-**Purpose:** Pure mathematics — coordinate rotation and motor mapping. No simulation.
+**Purpose:** Pure mathematics - coordinate rotation and motor mapping. No simulation.
 
 #### Constants
 
 | Constant | Value | Description |
 |---|---|---|
-| `WHEEL_RADIUS` | `0.03` m | Radius of each launcher wheel |
+| `WHEEL_RADIUS` | `0.025` m | Radius of each launcher wheel |
 | `WHEEL_ANGLES_DEG` | `[90, 210, 330]` | Angular position of each wheel (degrees from forward axis) |
 
 #### Functions
@@ -88,7 +88,7 @@ Maps desired speed and spin to RPMs for each of the 3 omni-wheels. Each wheel co
 
 | Constant | Value | Description |
 |---|---|---|
-| `LAUNCHER_HEIGHT` | `0.30` m | Height of launcher nozzle above the table surface |
+| `LAUNCHER_HEIGHT` | `0.165` m | Height of launcher nozzle above the table surface |
 | `Z_TABLE` | `0.0` m | Z-coordinate of the table surface |
 | `BALL_MASS` | `0.0027` kg | Official ITF ball mass |
 | `BALL_RADIUS` | `0.02` m | Ball radius (40 mm diameter) |
@@ -206,18 +206,3 @@ kinematics.generate_           │  (initial guess only)
 
 ---
 
-## Dependencies
-
-```
-numpy
-scipy
-```
-
-Install with:
-```bash
-pip install numpy scipy
-```
-
----
-
-*Aerodynamic model based on: Chen et al. (2010) — Table Tennis Ball Aerodynamics*
