@@ -33,7 +33,7 @@ K_MAGNUS = 0.5 * RHO_AIR * BALL_AREA * C_L * BALL_RADIUS / BALL_MASS  # Magnus s
 # Simulation settings
 T_MAX   = 5.0    # s  — maximum integration time (ball must hit table before this)
 Z_TABLE = 0.0    # m  — table surface z-coordinate (event target)
-LAUNCHER_HEIGHT = 0.30  # m  — launcher nozzle height above table surface
+LAUNCHER_HEIGHT = 0.165  # m  — launcher nozzle height above table surface
 
 
 def _aerodynamic_odes(t, state, w_global):
