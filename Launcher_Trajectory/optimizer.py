@@ -80,7 +80,7 @@ def find_launch_parameters(target_X, target_Y, V, w1, w2):
     ---------
     1. Generate initial guess from vacuum ballistics (kinematics.generate_initial_guess).
     2. Multi-start L-BFGS-B with hardware bounds for fast convergence.
-    3. Nelder-Mead polish pass (gradient-free) to escape boundary traps.
+    3. Polish pass with tight tolerances (gradient-based L-BFGS-B).
     4. Check final error <= 1 cm tolerance.
     5. Return optimal angles or raise TargetUnreachableError.
 
@@ -149,35 +149,28 @@ def find_launch_parameters(target_X, target_Y, V, w1, w2):
         if best_result.fun <= ERROR_TOLERANCE:
             break
 
-    # ── Step 3: Nelder-Mead polish (gradient-free) ─────────────────────────
-    # Nelder-Mead ignores bounds but the ODE-based cost function naturally
-    # penalises out-of-range solutions (ball won't land → 1e6 penalty).
-    # We add an explicit soft penalty to keep solutions within hardware limits.
+    # ── Step 3: Polish pass ───────────────────────────────────────────────
+    # If the multi-start L-BFGS-B didn't hit the 1cm tolerance, we run one 
+    # final, highly-precise L-BFGS-B pass starting from the best known point.
     if best_result.fun > ERROR_TOLERANCE:
-        def penalised_obj(g):
-            p, y = float(g[0]), float(g[1])
-            penalty  = max(0.0, PITCH_MIN - p) + max(0.0, p - PITCH_MAX)
-            penalty += max(0.0, YAW_MIN   - y) + max(0.0, y - YAW_MAX)
-            return objective_function(g, *args) + penalty * 10.0
-
-        nm_res = opt.minimize(
-            fun=penalised_obj,
+        
+        # Native L-BFGS-B handles bounds cleanly without penalty hacks
+        lbfgsb_res = opt.minimize(
+            fun=objective_function,
             x0=best_result.x,
-            method='Nelder-Mead',
+            args=args,
+            method='L-BFGS-B',
+            bounds=BOUNDS,
             options={
-                'xatol':   1e-8,
-                'fatol':   1e-8,
-                'maxiter': 50000,
-                'adaptive': True,
-            },
+                'ftol': 1e-8,
+                'gtol': 1e-8,
+                'maxiter': 1000
+            }
         )
 
-        # Clamp solution back to hardware bounds
-        nm_res.x = np.clip(nm_res.x, [PITCH_MIN, YAW_MIN], [PITCH_MAX, YAW_MAX])
-        nm_res.fun = objective_function(nm_res.x, *args)
-
-        if nm_res.fun < best_result.fun:
-            best_result = nm_res
+        # If the polish pass improved the error, save it as the best result
+        if lbfgsb_res.fun < best_result.fun:
+            best_result = lbfgsb_res
 
     # ── Step 4: Check tolerance ────────────────────────────────────────────
     final_error = best_result.fun
