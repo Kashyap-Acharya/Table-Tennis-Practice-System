@@ -3,65 +3,57 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smart TT Trainer Dashboard</title>
+    <title>IITGN Smart TT Trainer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
 
     <header>
-        <h1><span class="branding">IITGN</span> Trainer</h1>
-        <div id="status">WS: Disconnected</div>
+        <h1><span class="branding">IITGN</span> Core</h1>
+        <div id="status" style="color: var(--neon-red);">Sys: Offline</div>
     </header>
 
     <div id="screen-level" class="screen active">
-        <button class="cyber-btn" onclick="selectLevel('beginner')">Beginner</button>
-        <button class="cyber-btn" onclick="selectLevel('intermediate')">Intermediate</button>
-        <button class="cyber-btn" onclick="selectLevel('advanced')">Advanced</button>
-    </div>
-
-    <div id="screen-sub" class="screen">
-        <div id="sub-buttons-container" style="width: 100%; display: flex; flex-direction: column; align-items: center; gap: 30px;"></div>
-        <button class="cyber-btn danger" style="margin-top: 40px; padding: 20px; font-size: 1.5rem;" onclick="showScreen('screen-level')">Back</button>
+        <h2 class="mode-title">Select Firing Sequence</h2>
+        
+        <div class="mode-grid">
+            <button class="cyber-btn mode-btn normal" onclick="startDrill('fh_normal')">Forehand Normal</button>
+            <button class="cyber-btn mode-btn spin" onclick="startDrill('fh_spin')">Forehand Spin</button>
+            <button class="cyber-btn mode-btn normal" onclick="startDrill('bh_normal')">Backhand Normal</button>
+            <button class="cyber-btn mode-btn spin" onclick="startDrill('bh_spin')">Backhand Spin</button>
+        </div>
+        
+        <button class="cyber-btn mode-btn random" onclick="startDrill('random')">Random / Chaos Matrix</button>
     </div>
 
     <div id="screen-active" class="screen">
         <div class="active-display">
             <div class="pulse-ring"></div>
-            <div id="active-drill-text">ACTIVE</div>
-            <div class="processing-text">Tracking Systems Online</div>
+            <h2 id="active-drill-text">SEQUENCE ACTIVE</h2>
+            <div class="processing-text">Awaiting CV Telemetry...</div>
         </div>
 
-        <canvas id="tt-board" width="610" height="548"></canvas>
-
-        <div id="active-controls">
-            <button class="cyber-btn danger" onclick="endDrill()">End & Stats</button>
-            <button class="cyber-btn emergency" onclick="emergencyStop()">EMERGENCY STOP (99)</button>
+        <div id="active-controls" style="margin-top: 50px;">
+            <button class="cyber-btn danger" style="padding: 15px; font-size: 1.2rem; flex: 1;" onclick="endDrill()">End Sequence</button>
+            <button class="cyber-btn emergency" style="padding: 15px; font-size: 1.2rem; flex: 1;" onclick="emergencyStop()">Override Halt (99)</button>
         </div>
     </div>
 
     <div id="screen-summary" class="screen">
-        <h2 class="mode-title">Drill Complete</h2>
+        <h2 style="font-size: 3rem; margin-bottom: 30px; color: var(--iitgn-orange); text-transform: uppercase; letter-spacing: 5px; text-shadow: 0 0 20px rgba(255, 102, 0, 0.4);">Sequence Complete</h2>
         
         <div class="stat-grid">
             <div class="stat-card">
-                <div class="stat-val" id="sum-accuracy">0%</div>
+                <div class="stat-val" id="sum-accuracy">0<span style="font-size: 2rem">%</span></div>
                 <div class="stat-label">Hit Accuracy</div>
             </div>
             <div class="stat-card">
-                <div class="stat-val" id="sum-streak">0</div>
-                <div class="stat-label">Max Streak</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-val" id="sum-vel">0</div>
-                <div class="stat-label">Avg Velocity (km/h)</div>
-            </div>
-            <div class="stat-card">
                 <div class="stat-val" id="sum-total">0</div>
-                <div class="stat-label">Total Balls</div>
+                <div class="stat-label">Balls Fired</div>
             </div>
         </div>
-
-        <button class="cyber-btn" onclick="showScreen('screen-level')">Start New Drill</button>
+        <button class="cyber-btn" style="max-width: 400px;" onclick="showScreen('screen-level')">Acknowledge & Return</button>
     </div>
 
     <script src="/dashboard.js"></script>
