@@ -3,59 +3,355 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IITGN Smart TT Trainer</title>
-    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles.css">
+    <title>Smart TT Trainer Dashboard</title>
+    <style>
+        :root {
+            --bg-color: #080808;
+            --panel-bg: #111111;
+            --iitgn-orange: #FF6600;
+            --iitgn-blue: #003366;
+            --neon-green: #39ff14;
+            --neon-red: #ff073a;
+            --text-main: #e0e0e0;
+        }
+
+        body, html {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        header {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+        }
+
+        h1 { margin: 0; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 2px; color: #555;}
+        .branding { color: var(--iitgn-orange); font-weight: bold; }
+
+        .screen {
+            display: none; 
+            width: 100%;
+            height: 100vh;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 30px;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .screen.active { display: flex; }
+
+        .giant-btn {
+            width: 90%;
+            max-width: 800px;
+            padding: 30px 20px;
+            font-size: 2rem;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 3px;
+            background: var(--panel-bg);
+            color: var(--text-main);
+            border: 3px solid var(--iitgn-blue);
+            border-radius: 15px;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+            box-shadow: 0 10px 30px rgba(0, 51, 102, 0.2);
+        }
+
+        .giant-btn:hover {
+            background: var(--iitgn-blue);
+            transform: translateY(-5px);
+        }
+
+        .giant-btn.danger {
+            border-color: var(--neon-red);
+            background: rgba(255, 7, 58, 0.1);
+        }
+
+        .giant-btn.danger:hover {
+            background: var(--neon-red);
+            color: white;
+        }
+
+        .giant-btn.emergency {
+            background: #ff0000;
+            color: white;
+            border-color: #8b0000;
+            box-shadow: 0 10px 30px rgba(255, 0, 0, 0.4);
+        }
+
+        .giant-btn.emergency:hover {
+            background: #cc0000;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            width: 90%;
+            max-width: 800px;
+            margin-bottom: 40px;
+        }
+
+        .stat-card {
+            background: var(--panel-bg);
+            padding: 30px;
+            border-radius: 12px;
+            border-left: 5px solid var(--iitgn-orange);
+            text-align: center;
+        }
+
+        .stat-val { font-size: 4rem; font-weight: bold; font-family: monospace; color: white;}
+        .stat-label { font-size: 1.2rem; color: #888; text-transform: uppercase; letter-spacing: 1px;}
+
+        #tt-board {
+            position: absolute;
+            bottom: 50px;
+            background: transparent;
+            z-index: 10;
+        }
+        
+        #active-btn-container {
+            position: absolute;
+            top: 50px;
+            z-index: 20;
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+        }
+    </style>
 </head>
 <body>
 
     <header>
-        <h1><span class="branding">IITGN</span> Core</h1>
-        <div id="status" style="color: var(--neon-red);">Sys: Offline</div>
+        <h1><span class="branding">IITGN</span> Trainer</h1>
+        <div id="status" style="color: #888; font-size: 0.9rem; margin-top: 5px;">WS: Disconnected</div>
     </header>
 
     <div id="screen-level" class="screen active">
-        <h2 class="mode-title">Select Firing Sequence</h2>
-        
-        <div class="mode-grid">
-            <button class="cyber-btn mode-btn normal" onclick="startDrill('fh_normal')">Forehand Normal</button>
-            <button class="cyber-btn mode-btn spin" onclick="startDrill('fh_spin')">Forehand Spin</button>
-            <button class="cyber-btn mode-btn normal" onclick="startDrill('bh_normal')">Backhand Normal</button>
-            <button class="cyber-btn mode-btn spin" onclick="startDrill('bh_spin')">Backhand Spin</button>
-        </div>
-        
-        <button class="cyber-btn mode-btn random" onclick="startDrill('random')">Random / Chaos Matrix</button>
+        <button class="giant-btn" onclick="selectLevel('beginner')">Beginner</button>
+        <button class="giant-btn" onclick="selectLevel('intermediate')">Intermediate</button>
+        <button class="giant-btn" onclick="selectLevel('advanced')">Advanced</button>
+    </div>
+
+    <div id="screen-sub" class="screen">
+        <div id="sub-buttons-container" style="width: 100%; display: flex; flex-direction: column; align-items: center; gap: 30px;"></div>
+        <button class="giant-btn danger" style="margin-top: 40px; padding: 20px; font-size: 1.5rem;" onclick="showScreen('screen-level')">Back</button>
     </div>
 
     <div id="screen-active" class="screen">
-        <div class="active-display">
-            <div class="pulse-ring"></div>
-            <h2 id="active-drill-text">SEQUENCE ACTIVE</h2>
-            <div class="processing-text">Awaiting CV Telemetry...</div>
+        <div id="active-btn-container">
+            <button class="giant-btn danger" style="max-width: 400px; font-size: 1.2rem;" onclick="endDrill()">End & Stats</button>
+            <button class="giant-btn emergency" style="max-width: 400px; font-size: 1.2rem;" onclick="emergencyStop()">EMERGENCY STOP (99)</button>
         </div>
-
-        <div id="active-controls" style="margin-top: 50px;">
-            <button class="cyber-btn danger" style="padding: 15px; font-size: 1.2rem; flex: 1;" onclick="endDrill()">End Sequence</button>
-            <button class="cyber-btn emergency" style="padding: 15px; font-size: 1.2rem; flex: 1;" onclick="emergencyStop()">Override Halt (99)</button>
-        </div>
+        <canvas id="tt-board" width="610" height="548"></canvas>
     </div>
 
     <div id="screen-summary" class="screen">
-        <h2 style="font-size: 3rem; margin-bottom: 30px; color: var(--iitgn-orange); text-transform: uppercase; letter-spacing: 5px; text-shadow: 0 0 20px rgba(255, 102, 0, 0.4);">Sequence Complete</h2>
+        <h2 style="font-size: 3rem; margin-bottom: 10px; color: var(--iitgn-orange);">Drill Complete</h2>
         
         <div class="stat-grid">
             <div class="stat-card">
-                <div class="stat-val" id="sum-accuracy">0<span style="font-size: 2rem">%</span></div>
+                <div class="stat-val" id="sum-accuracy">0%</div>
                 <div class="stat-label">Hit Accuracy</div>
             </div>
             <div class="stat-card">
+                <div class="stat-val" id="sum-streak">0</div>
+                <div class="stat-label">Max Streak</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="sum-vel">0</div>
+                <div class="stat-label">Avg Velocity (km/h)</div>
+            </div>
+            <div class="stat-card">
                 <div class="stat-val" id="sum-total">0</div>
-                <div class="stat-label">Balls Fired</div>
+                <div class="stat-label">Total Balls</div>
             </div>
         </div>
-        <button class="cyber-btn" style="max-width: 400px;" onclick="showScreen('screen-level')">Acknowledge & Return</button>
+
+        <button class="giant-btn" onclick="showScreen('screen-level')">Start New Drill</button>
     </div>
 
-    <script src="/dashboard.js"></script>
+        <button class="giant-btn" onclick="showScreen('screen-level')">Start New Drill</button>
+    </div>
+
+    <script>
+        const drillData = {
+            beginner: [
+                { id: 1, name: "Forehand Counter" },
+                { id: 2, name: "Backhand Counter" },
+                { id: 3, name: "Basic Push" }
+            ],
+            intermediate: [
+                { id: 4, name: "Topspin Drive" },
+                { id: 5, name: "Active Block" },
+                { id: 6, name: "Pivot Forehand" }
+            ],
+            advanced: [
+                { id: 7, name: "Falkenberg Drill" },
+                { id: 8, name: "Random Topspin" },
+                { id: 9, name: "Short Touch" }
+            ]
+        };
+
+        let ws;
+        let selectedDrill = null;
+        
+        // These variables are now purely mirrors of what the backend says
+        let totalShots = 0;
+        let successfulHits = 0;
+        let currentStreak = 0;
+        let maxStreak = 0;
+        let backendAccuracy = 0; 
+        
+        // Velocity is the only thing we still track locally because the backend session doesn't store an array of past velocities yet.
+        let velocityLog = [];
+
+        const canvas = document.getElementById('tt-board');
+        const ctx = canvas.getContext('2d');
+        const scale = 0.4; 
+
+        // 🌟 SINGLE SOURCE OF TRUTH: Ask the backend for the exact score
+        async function syncStatsWithBackend() {
+            try {
+                const response = await fetch('/api/session');
+                if (!response.ok) return; 
+                
+                const sessionData = await response.json();
+
+                // Frontend does no math! It just accepts whatever the backend says.
+                totalShots = sessionData.total_shots || 0;
+                successfulHits = sessionData.hit_count || 0;
+                currentStreak = sessionData.streak || 0;
+                maxStreak = sessionData.best_streak || 0;
+                backendAccuracy = sessionData.accuracy || 0; 
+
+                // If this was called during a page refresh and a drill is active, show the active screen
+                if (sessionData.active && !document.getElementById('screen-active').classList.contains('active')) {
+                    showScreen('screen-active');
+                }
+            } catch (error) {
+                console.error("Could not sync with backend:", error);
+            }
+        }
+
+        function showScreen(screenId) {
+            document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+            document.getElementById(screenId).classList.add('active');
+        }
+
+        function selectLevel(level) {
+            const container = document.getElementById('sub-buttons-container');
+            container.innerHTML = ""; 
+            
+            drillData[level].forEach(drill => {
+                const btn = document.createElement('button');
+                btn.className = 'giant-btn';
+                btn.innerText = drill.name;
+                btn.onclick = () => startDrill(drill.id);
+                container.appendChild(btn);
+            });
+
+            showScreen('screen-sub');
+        }
+
+        function startDrill(drillId) {
+            selectedDrill = drillId;
+            velocityLog = [];
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            showScreen('screen-active');
+
+            if(ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action: "start_drill", drill_id: drillId }));
+            }
+        }
+
+        function endDrill() {
+            if(ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action: "stop_drill" }));
+            }
+
+            // We still calculate average velocity locally
+            const avgVel = velocityLog.length > 0 ? Math.round(velocityLog.reduce((a, b) => a + b, 0) / velocityLog.length) : 0;
+
+            // Use the stats straight from the Python backend!
+            document.getElementById('sum-accuracy').innerText = `${backendAccuracy}%`;
+            document.getElementById('sum-streak').innerText = maxStreak;
+            document.getElementById('sum-vel').innerText = avgVel;
+            document.getElementById('sum-total').innerText = totalShots;
+
+            showScreen('screen-summary');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function emergencyStop() {
+            if(ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action: "stop_drill" })); 
+            }
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            showScreen('screen-level');
+        }
+
+        function initWebSocket() {
+            ws = new WebSocket(`ws://${window.location.host}/ws`);
+            
+            ws.onopen = () => {
+                document.getElementById('status').innerText = "WS: Connected";
+                document.getElementById('status').style.color = "var(--neon-green)";
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                
+                if (data.event === "shot_result" && document.getElementById('screen-active').classList.contains('active')) {
+                    
+                    // 1. Draw the physical impact on the canvas
+                    drawImpact(data.impact_coords.y, data.impact_coords.z, data.success);
+                    
+                    // 2. Track velocity locally
+                    if (data.velocity) velocityLog.push(data.velocity);
+
+                    // 3. Ask the backend for the updated official score!
+                    syncStatsWithBackend();
+                }
+            };
+
+            ws.onclose = () => {
+                document.getElementById('status').innerText = "WS: Disconnected";
+                document.getElementById('status').style.color = "var(--neon-red)";
+                setTimeout(initWebSocket, 2000); 
+            };
+        }
+
+        function drawImpact(y_mm, z_mm, success) {
+            const x_px = (y_mm + 762.5) * scale;
+            const y_px = canvas.height - (z_mm * scale);
+
+            ctx.beginPath();
+            ctx.arc(x_px, y_px, 6, 0, 2 * Math.PI);
+            ctx.fillStyle = success ? 'var(--neon-green)' : 'var(--neon-red)';
+            ctx.fill();
+            
+            ctx.shadowBlur = 10;
+            ctx.shadowColor = ctx.fillStyle;
+            ctx.fill();
+            ctx.shadowBlur = 0; 
+        }
+
+        // Boot up and immediately ask the backend for the current state in case of a refresh
+        syncStatsWithBackend();
+        initWebSocket();
+    </script>
 </body>
 </html>
