@@ -20,7 +20,7 @@ from multiprocessing.shared_memory import SharedMemory
 from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -395,7 +395,7 @@ async def handle_message(ws: WebSocket, payload: dict) -> None:
         return
 
 # ─────────────────────────────────────────────────────────────────────────────
-# REST ENDPOINTS
+# REST ENDPOINTS (INCLUDING CSS AND JS HOSTING)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/")
@@ -407,6 +407,22 @@ async def get_dashboard() -> HTMLResponse:
             return HTMLResponse(f.read())
     except FileNotFoundError:
         return HTMLResponse("<h1>Error: index.html not found!</h1><p>Ensure it is in the same folder as server.py</p>", status_code=404)
+
+@app.get("/styles.css")
+async def get_css():
+    """Serve the CSS file from the root directory."""
+    css_path = Path(__file__).parent / "styles.css"
+    if css_path.exists():
+        return FileResponse(css_path)
+    return HTMLResponse("<h1>Error: styles.css not found!</h1>", status_code=404)
+
+@app.get("/dashboard.js")
+async def get_js():
+    """Serve the JS file from the root directory."""
+    js_path = Path(__file__).parent / "dashboard.js"
+    if js_path.exists():
+        return FileResponse(js_path)
+    return HTMLResponse("<h1>Error: dashboard.js not found!</h1>", status_code=404)
 
 @app.get("/api/health")
 async def health() -> dict:
