@@ -1,6 +1,6 @@
 # T4-Trainer
 
-# WOE Table Tennis Training Robot
+# WOE // Table Tennis Practice System
 
 An automated, intelligent table tennis training system built for the World of Engineering course. This system utilizes high-speed computer vision to track ball impacts, a physics-driven launcher engine to generate realistic drills, and an ultra-low-latency web interface for real-time user feedback.
 
