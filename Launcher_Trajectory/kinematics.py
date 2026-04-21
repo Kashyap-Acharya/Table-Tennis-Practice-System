@@ -49,7 +49,7 @@ from physics_engine import LAUNCHER_X, LAUNCHER_Y, LAUNCHER_Z, G, BALL_RADIUS
 
 # Your Flywheel Dimensions
 WHEEL_RADIUS = 0.025  # 5cm diameter = 2.5cm radius
-RPM_PER_RAD = 60.0 / (2.0 * math.pi)
+RPM_PER_RAD = 60.0 / (2.0 * math.pi) # Converion from Angular Velocity (rad/s) to Revolutions Per Minute (RPM)
 
 def local_to_global(V, w1, w2, pitch_deg, yaw_deg):
     """
