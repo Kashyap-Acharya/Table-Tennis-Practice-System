@@ -44,15 +44,6 @@ v_global : np.ndarray [vx, vy, vz]   — velocity in global frame   (m/s)
 w_global : np.ndarray [wx, wy, wz]   — spin    in global frame   (rad/s)
 """
 
-"""
-kinematics.py
-=============
-Kinematics Math Engine
-
-Translates ballistics and velocities between the physical motors, 
-the launcher's local barrel frame, and the global room coordinates.
-"""
-
 import math
 from physics_engine import LAUNCHER_X, LAUNCHER_Y, LAUNCHER_Z, G, BALL_RADIUS
 
