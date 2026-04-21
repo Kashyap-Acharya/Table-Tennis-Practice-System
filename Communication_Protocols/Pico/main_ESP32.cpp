@@ -7,10 +7,10 @@
 // ==========================================
 #define PIN_SERVO_PITCH 12
 #define PIN_SERVO_YAW   13
-#define PIN_ESC_M1      14
-#define PIN_ESC_M2      27
-#define PIN_ESC_M3      26
-#define PIN_FEED_MOTOR  25  // Stepper or DC Motor for feeding
+#define PIN_ESC_M1      25
+#define PIN_ESC_M2      26
+#define PIN_ESC_M3      27
+#define PIN_FEED_MOTOR  14
 #define PIN_NEOPIXEL    33
 
 #define MAX_LEDS 1000 
