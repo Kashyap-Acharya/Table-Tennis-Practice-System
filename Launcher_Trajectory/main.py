@@ -10,9 +10,11 @@ from kinematics import calculate_motor_rpms
 # 1. THE DRILL DICTIONARY
 # ==========================================
 DRILL_DICT = {
-    1: { "name": "Forehand Normal", "depth_cm": (60, 120), "width_cm": (15, 70),   "v_ms": (8, 11),  "sidespin_rpm": (0, 0),         "topspin_rpm": (300, 800) },
-    2: { "name": "Backhand Normal", "depth_cm": (60, 120), "width_cm": (82, 137),  "v_ms": (7, 9),   "sidespin_rpm": (0, 0),         "topspin_rpm": (300, 800) },
-    3: { "name": "Spin (Forehand)", "depth_cm": (30, 125), "width_cm": (15, 70),   "v_ms": (8, 12),  "sidespin_rpm": (-1500, 1500),  "topspin_rpm": (-500, 1000) }
+    1: { "name": "Forehand Normal", "depth_cm": (60, 120), "width_cm": (15, 70),  "v_ms": (8, 11), "sidespin_rpm": (0, 0),        "topspin_rpm": (300, 800)  },
+    2: { "name": "Backhand Normal", "depth_cm": (60, 120), "width_cm": (82, 137), "v_ms": (7, 9),  "sidespin_rpm": (0, 0),        "topspin_rpm": (300, 800)  },
+    3: { "name": "FH Spin",        "depth_cm": (30, 125), "width_cm": (15, 70),  "v_ms": (8, 12), "sidespin_rpm": (-1500, 1500), "topspin_rpm": (-500, 1000)},
+    4: { "name": "BH Spin",        "depth_cm": (30, 125), "width_cm": (82, 137), "v_ms": (8, 12), "sidespin_rpm": (-1500, 1500), "topspin_rpm": (-500, 1000)},
+    5: { "name": "Random",         "depth_cm": (30, 125), "width_cm": (15, 137), "v_ms": (7, 12), "sidespin_rpm": (-1000, 1000), "topspin_rpm": (-500, 1000)},
 }
 
 def generate_randomized_shot(drill_id):
