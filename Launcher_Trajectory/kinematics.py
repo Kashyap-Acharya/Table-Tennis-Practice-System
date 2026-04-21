@@ -16,192 +16,108 @@ generate_initial_guess(target_X, target_Y, V)
 
 calculate_motor_rpms(V, w1, w2)
     Map forward velocity + spins to RPMs for the 3-wheeled omni launcher.
+
+Rotate local velocity and spin vectors into global room coordinates
+using the rotation matrices defined in WOE_Launcher_DataFlow.pdf.
+
+The launcher's local frame:
++X  — forward (direction the ball is fired)
++Y  — lateral left
++Z  — up
+
+The rotation is applied as:  R_global = R_yaw @ R_pitch
+Then:  v_global = R_global @ [v, 0, 0]
+w_global = R_global @ [0, w1, w2]
+where w1 = topspin (about local Y), w2 = sidespin (about local Z)
+
+Parameters
+----------
+v     : float   — ball speed magnitude            (m/s)
+w1    : float   — topspin  (angular velocity)     (rad/s, positive = topspin)
+w2    : float   — sidespin (angular velocity)     (rad/s, positive = right-spin)
+pitch : float   — launcher pitch angle            (degrees, +ve = upward)
+yaw   : float   — launcher yaw angle              (degrees, +ve = left of centre)
+
+Returns
+-------
+v_global : np.ndarray [vx, vy, vz]   — velocity in global frame   (m/s)
+w_global : np.ndarray [wx, wy, wz]   — spin    in global frame   (rad/s)
 """
 
-import numpy as np
+"""
+kinematics.py
+=============
+Kinematics Math Engine
+
+Translates ballistics and velocities between the physical motors, 
+the launcher's local barrel frame, and the global room coordinates.
+"""
+
 import math
+from physics_engine import LAUNCHER_X, LAUNCHER_Y, LAUNCHER_Z, G, BALL_RADIUS
 
-# ──────────────────────────────────────────────
-# Physical constants
-# ──────────────────────────────────────────────
-G            = 9.787   # m/s²   gravitational acceleration
-WHEEL_RADIUS = 0.025    # m      launcher wheel radius (30 mm — adjust to hardware)
-RPM_PER_RAD  = 60.0 / (2.0 * math.pi)   # conversion factor
+# Your Flywheel Dimensions
+WHEEL_RADIUS = 0.025  # 5cm diameter = 2.5cm radius
+RPM_PER_RAD = 60.0 / (2.0 * math.pi)
 
-# Wheel offsets for 3-wheeled omni configuration (degrees from forward axis +X,
-# measured in the YZ plane — the plane perpendicular to ball travel).
-# Physical layout: Straight "Y" configuration (viewed from front)
-# 0° is Right, 90° is Up, 180° is Left
-#   Wheel 1: 270° — Bottom
-#   Wheel 2: 150° — Top-Left
-#   Wheel 3:  30° — Top-Right
-WHEEL_ANGLES_DEG = [270,150,30]   # 120° apart, first wheel at 90°
-WHEEL_ANGLES_RAD = [math.radians(a) for a in WHEEL_ANGLES_DEG]
-
-
-# ══════════════════════════════════════════════
-# 1. Vector Translation
-# ══════════════════════════════════════════════
-
-def local_to_global(v, w1, w2, pitch, yaw):
+def local_to_global(V, w1, w2, pitch_deg, yaw_deg):
     """
-    Rotate local velocity and spin vectors into global room coordinates
-    using the rotation matrices defined in WOE_Launcher_DataFlow.pdf.
-
-    The launcher's local frame:
-      +X  — forward (direction the ball is fired)
-      +Y  — lateral left
-      +Z  — up
-
-    The rotation is applied as:  R_global = R_yaw @ R_pitch
-    Then:  v_global = R_global @ [v, 0, 0]
-           w_global = R_global @ [0, w1, w2]
-               where w1 = topspin (about local Y), w2 = sidespin (about local Z)
-
-    Parameters
-    ----------
-    v     : float   — ball speed magnitude            (m/s)
-    w1    : float   — topspin  (angular velocity)     (rad/s, positive = topspin)
-    w2    : float   — sidespin (angular velocity)     (rad/s, positive = right-spin)
-    pitch : float   — launcher pitch angle            (degrees, +ve = upward)
-    yaw   : float   — launcher yaw angle              (degrees, +ve = left of centre)
-
-    Returns
-    -------
-    v_global : np.ndarray [vx, vy, vz]   — velocity in global frame   (m/s)
-    w_global : np.ndarray [wx, wy, wz]   — spin    in global frame   (rad/s)
+    Rotates the Launcher's firing vectors into the room's Global axes.
+    +Y is Forward, +X is Launcher's Right (Receiver's Left), +Z is Up.
     """
-    pitch_rad = math.radians(pitch)
-    yaw_rad   = math.radians(yaw)
+    pitch = math.radians(pitch_deg)
+    yaw = math.radians(yaw_deg)
 
-    # ── Rotation matrix around Z axis (yaw) ──────────────────────────────
-    # Rotates the horizontal plane
-    R_yaw = np.array([
-        [ math.cos(yaw_rad), -math.sin(yaw_rad), 0.0],
-        [ math.sin(yaw_rad),  math.cos(yaw_rad), 0.0],
-        [               0.0,                0.0, 1.0],
-    ])
+    # 1. Velocity Rotation
+    vx = V * math.sin(yaw) * math.cos(pitch)
+    vy = V * math.cos(yaw) * math.cos(pitch)
+    vz = V * math.sin(pitch)
 
-    # ── Rotation matrix around Y axis (pitch) ────────────────────────────
-    # Positive pitch tilts the launcher upward (+Z direction)
-    # Standard right-hand rule around Y axis: positive angle lifts +X toward +Z
-    R_pitch = np.array([
-        [ math.cos(pitch_rad), 0.0, -math.sin(pitch_rad)],
-        [                 0.0, 1.0,                  0.0],
-        [ math.sin(pitch_rad), 0.0,  math.cos(pitch_rad)],
-    ])
+    # 2. Spin Rotation
+    # w1 > 0 (Topspin): Pushes ball Down (-Z). Spin axis must be -X.
+    # w2 > 0 (Right Sidespin): Pushes ball Right (+X). Spin axis must be -Z.
+    wx = -w1 * math.cos(yaw)
+    wy = w1 * math.sin(yaw)
+    wz = -w2 
 
-    # Combined rotation: first pitch, then yaw
-    R = R_yaw @ R_pitch
-
-    # ── Local velocity vector: ball fired along +X axis ──────────────────
-    v_local = np.array([v, 0.0, 0.0])
-
-    # ── Local spin vector: topspin about local Y, sidespin about local Z ─
-    # w1 (topspin)  → spin around launcher's Y axis
-    # w2 (sidespin) → spin around launcher's Z axis
-    w_local = np.array([0.0, w1, w2])
-
-    # ── Rotate into global frame ─────────────────────────────────────────
-    v_global = R @ v_local
-    w_global = R @ w_local
-
-    return v_global, w_global
-
-
-# ══════════════════════════════════════════════
-# 2. Initial Guesser
-# ══════════════════════════════════════════════
+    return [vx, vy, vz], [wx, wy, wz]
 
 def generate_initial_guess(target_X, target_Y, V):
     """
-    Generate a mathematically sound initial (pitch, yaw) guess using
-    standard vacuum ballistics.
-
-    Vacuum ballistics formula:
-        θ = 0.5 * arcsin( g * Distance / V² )
-
-    The optimal launch angle for maximum distance is 45°. If the target
-    is too far for the given V, we clamp to 45°.
-
-    Parameters
-    ----------
-    target_X : float   — target x-coordinate in global room frame  (m)
-    target_Y : float   — target y-coordinate in global room frame  (m)
-    V        : float   — ball launch speed                          (m/s)
-
-    Returns
-    -------
-    (initial_pitch, initial_yaw) : tuple of float   — both in degrees
+    Provides a smart mathematical starting point for the Scipy Optimizer.
+    Distance is calculated dynamically using the launcher's physical offsets.
     """
-    # Horizontal distance to target
-    distance = math.sqrt(target_X**2 + target_Y**2)
+    # Distance from the physical launcher to the global target coordinate
+    dx = target_X - LAUNCHER_X
+    dy = target_Y - LAUNCHER_Y
+    distance = math.sqrt(dx**2 + dy**2)
 
-    # Yaw: angle to aim at the target in the horizontal plane
-    # atan2(Y, X) gives the angle from +X axis
-    initial_yaw = math.degrees(math.atan2(target_Y, target_X))
+    # Basic vacuum ballistics formula for starting Pitch
+    val = (G * distance) / (V**2)
+    val = max(-1.0, min(1.0, val)) # Clamp to prevent math domain errors on edge cases
+    initial_pitch = math.degrees(0.5 * math.asin(val))
 
-    # Pitch: vacuum ballistics
-    # θ = 0.5 * arcsin(g * distance / V²)
-    if V < 1e-6:
-        initial_pitch = 45.0   # degenerate case
-    else:
-        sin_arg = G * distance / (V ** 2)
-        if sin_arg >= 1.0:
-            # Target is beyond maximum range — use 45° (maximum range angle)
-            initial_pitch = 45.0
-        else:
-            initial_pitch = math.degrees(0.5 * math.asin(sin_arg))
+    # Basic trigonometry for starting Yaw 
+    initial_yaw = math.degrees(math.atan2(dx, dy))
 
-    return (initial_pitch, initial_yaw)
-
-
-# ══════════════════════════════════════════════
-# 3. Motor Translation
-# ══════════════════════════════════════════════
+    return [initial_pitch, initial_yaw]
 
 def calculate_motor_rpms(V, w1, w2):
     """
-    Map forward velocity and spin commands to motor RPMs for a
-    3-wheeled omni-wheel launcher configuration.
-
-    Physical layout: Straight "Y" configuration
-      Wheel 1: Bottom    (270°)
-      Wheel 2: Top-Left  (150°)
-      Wheel 3: Top-Right (30°)
-
-    Each wheel's tangential velocity contribution is derived from the rigid body 
-    kinematics cross product (V_contact = V_center + w x r):
-    
-      v_wheel_i = V + R_ball * (w1 * sin(θ_i) + w2 * cos(θ_i))
-
-    This gracefully handles the sine/cosine projections exactly as derived:
-      - Bottom wheel (270°): pure V - w1*R
-      - Top wheels: V + w1*R*sin(30°) ± w2*R*cos(30°)
-
-    Parameters
-    ----------
-    V  : float   — desired ball forward speed (m/s)
-    w1 : float   — topspin  (rad/s, about local +Y axis)
-    w2 : float   — sidespin (rad/s, about local +Z axis)
-
-    Returns
-    -------
-    (M1_RPM, M2_RPM, M3_RPM) : tuple of int   — motor RPMs (rounded to nearest integer)
+    Translates required Velocity and Spin to 3-wheel tangential speeds.
+    Configuration: M1(30° Top-Right), M2(150° Top-Left), M3(270° Bottom-Center)
     """
-    BALL_RADIUS = 0.02  # m — table tennis ball radius
+    # All 3 wheels push forward equally to achieve V
+    # Topspin (w1) slows down M3, speeds up M1 & M2
+    # Sidespin (w2) splits laterally between M1 and M2
+    
+    # Cos/Sin constants pre-calculated for the exact angles
+    v_m1 = V + (BALL_RADIUS * w1 * 0.5) - (BALL_RADIUS * w2 * 0.866)
+    v_m2 = V + (BALL_RADIUS * w1 * 0.5) - (BALL_RADIUS * w2 * -0.866)
+    v_m3 = V + (BALL_RADIUS * w1 * -1.0) - (BALL_RADIUS * w2 * 0.0)
 
-    rpms = []
-    for angle in WHEEL_ANGLES_RAD:
-        # Calculate the rotational contribution using exact rigid body kinematics
-        # sin() maps to the Z-axis (topspin effect), cos() maps to the Y-axis (sidespin effect)
-        v_spin_effect = BALL_RADIUS * (w1 * math.sin(angle) + w2 * math.cos(angle))
-        
-        # Total tangential velocity at this wheel
-        v_tangential = V + v_spin_effect
+    rpm_m1 = int((v_m1 / WHEEL_RADIUS) * RPM_PER_RAD)
+    rpm_m2 = int((v_m2 / WHEEL_RADIUS) * RPM_PER_RAD)
+    rpm_m3 = int((v_m3 / WHEEL_RADIUS) * RPM_PER_RAD)
 
-        # Convert surface velocity to Motor RPM
-        rpm = (v_tangential / WHEEL_RADIUS) * RPM_PER_RAD
-        rpms.append(int(round(rpm)))
-
-    return (rpms[0], rpms[1], rpms[2])
+    return rpm_m1, rpm_m2, rpm_m3
