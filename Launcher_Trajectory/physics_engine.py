@@ -30,7 +30,7 @@ LAUNCHER_Z = 0.22
 # 2. AERODYNAMIC CONSTANTS (Chen 2010)
 # ──────────────────────────────────────────────
 BALL_MASS   = 0.0027      # kg
-BALL_RADIUS = 0.03        # m
+BALL_RADIUS = 0.021      # m
 
 # P = P0 * exp(-g * h / (R * T))
 # P_SEA_LEVEL = 101325 Standard pressure (Pa)
