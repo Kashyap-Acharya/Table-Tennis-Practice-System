@@ -28,7 +28,7 @@ Runs a customized, multi-process Python environment to bypass the Global Interpr
 * Executes kinematic matrix calculations to convert physical targets into exact motor RPMs and servo angles.
 * **Hardware Output:** Formats the final values into an ASCII string (e.g., `L:180\nA:45:12\nH:5\n`) and fires it over the USB UART connection to the Pico.
 
-### Brain 2: Raspberry Pi Pico (The Hardware Driver)
+### Brain 2: ESP32 CP2102 (The Hardware Driver)
 Runs bare-metal C++ to handle real-world physics:
 * Listens to the Pi via a 921,600 baud USB UART connection (`/dev/ttyACM0`).
 * Utilizes a hardware UART interrupt and a Circular Buffer (Ring Buffer) to parse incoming serial strings asynchronously, ensuring zero disruption to motor PWM timing.
