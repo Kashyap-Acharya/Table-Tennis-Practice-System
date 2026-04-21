@@ -1,8 +1,6 @@
 """
 optimizer.py
 ============
-Issue #16 — Core Targeting Loop (Optimizer)
-
 Links the CV user input to the physics engine via a Scipy L-BFGS-B optimizer.
 Iteratively guesses Pitch and Yaw to minimize the Euclidean distance between
 the simulated landing spot and the actual requested target.
@@ -38,20 +36,6 @@ def objective_function(guess_angles, target_X, target_Y, V, w1, w2):
     """
     Cost function for the optimizer.
 
-    Calls local_to_global -> predict_trajectory and returns the Euclidean
-    distance between the simulated landing spot and [target_X, target_Y].
-
-    Parameters
-    ----------
-    guess_angles : array-like [pitch, yaw]  — current optimizer guess (degrees)
-    target_X     : float   — desired landing x-coordinate  (m)
-    target_Y     : float   — desired landing y-coordinate  (m)
-    V            : float   — ball launch speed              (m/s)
-    w1           : float   — topspin  (rad/s)
-    w2           : float   — sidespin (rad/s)
-
-    Returns
-    -------
     distance : float  — Euclidean error (m) between simulated and target landing.
                Returns 1e6 (large penalty) if the ball never reaches the table.
     """
@@ -84,14 +68,6 @@ def find_launch_parameters(target_X, target_Y, V, w1, w2):
     4. Check final error <= 1 cm tolerance.
     5. Return optimal angles or raise TargetUnreachableError.
 
-    Parameters
-    ----------
-    target_X : float   — desired landing x-coordinate  (m)
-    target_Y : float   — desired landing y-coordinate  (m)
-    V        : float   — ball launch speed              (m/s)
-    w1       : float   — topspin  (rad/s)
-    w2       : float   — sidespin (rad/s)
-
     Returns
     -------
     (Optimal_Pitch, Optimal_Yaw) : tuple of float   — angles in degrees
@@ -105,12 +81,12 @@ def find_launch_parameters(target_X, target_Y, V, w1, w2):
     """
     args = (target_X, target_Y, V, w1, w2)
 
-    # ── Step 1: Generate initial guess from vacuum ballistics ──────────────
+    # ──────────────────────────────────────────── Step 1: Generate initial guess from vacuum ballistics ──────────────
     initial_pitch, initial_yaw = generate_initial_guess(target_X, target_Y, V)
     initial_pitch = float(np.clip(initial_pitch, PITCH_MIN, PITCH_MAX))
     initial_yaw   = float(np.clip(initial_yaw,   YAW_MIN,   YAW_MAX))
 
-    # ── Step 2: Multi-start L-BFGS-B ──────────────────────────────────────
+    # ──────────────────────────────────────────── Step 2: Multi-start L-BFGS-B ──────────────────────────────────────
     # Uses coarser finite-difference step (eps=0.5 deg) suited to the
     # noisy ODE cost landscape.
     best_result = None
@@ -149,7 +125,7 @@ def find_launch_parameters(target_X, target_Y, V, w1, w2):
         if best_result.fun <= ERROR_TOLERANCE:
             break
 
-    # ── Step 3: Polish pass ───────────────────────────────────────────────
+    # ──────────────────────────────────────────── Step 3: Polish pass ───────────────────────────────────────────────
     # If the multi-start L-BFGS-B didn't hit the 1cm tolerance, we run one 
     # final, highly-precise L-BFGS-B pass starting from the best known point.
     if best_result.fun > ERROR_TOLERANCE:
@@ -172,7 +148,7 @@ def find_launch_parameters(target_X, target_Y, V, w1, w2):
         if lbfgsb_res.fun < best_result.fun:
             best_result = lbfgsb_res
 
-    # ── Step 4: Check tolerance ────────────────────────────────────────────
+    # ──────────────────────────────────────────── Step 4: Check tolerance ────────────────────────────────────────────
     final_error = best_result.fun
     if final_error > ERROR_TOLERANCE:
         raise TargetUnreachableError(
@@ -183,6 +159,6 @@ def find_launch_parameters(target_X, target_Y, V, w1, w2):
             f"and yaw in [{YAW_MIN}, {YAW_MAX}] deg."
         )
 
-    # ── Step 5: Return optimal angles ─────────────────────────────────────
+    # ──────────────────────────────────────────── Step 5: Return optimal angles ─────────────────────────────────────
     optimal_pitch, optimal_yaw = best_result.x
     return (float(optimal_pitch), float(optimal_yaw))
