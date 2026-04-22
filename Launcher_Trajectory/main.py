@@ -58,7 +58,7 @@ def generate_grid_shot(drill_id):
     # Math Frame (Aerodynamics): 0 is Launcher. +X is Depth. +Y is Lateral Left.
     
     # Shift Width: Center of the 152.5cm table is 76.25. 
-    target_Y = (76.25 - grid_target["width"]) / 100.0 
+    target_Y = (grid_target["width"] - 76.25) / 100.0 
     
     # Shift Depth: The robot nozzle is physically mounted 137cm behind the net.
     target_X = (137.0 + grid_target["depth"]) / 100.0 
