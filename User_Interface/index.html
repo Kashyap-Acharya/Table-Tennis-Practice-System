@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>T4 Trainer System</title>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="bio-bg">
+  <div class="orb orb-1"></div><div class="orb orb-2"></div>
+</div>
+
+<!-- ── Level / drill-select screen ───────────────────────────────────────── -->
+<div id="screen-level" class="screen active">
+  <div class="bio-header">
+    <span class="sys-id" id="queue-status">SYNCING...</span>
+    <span class="sys-conn" id="conn-status">WAITING...</span>
+  </div>
+  <h1 class="main-title">INITIATE<br>SEQUENCE</h1>
+  <div id="controls-lock" style="width:100%; max-width:700px;">
+    <div class="drill-grid">
+      <button class="pod-btn" onclick="handleStart('fh_normal')">FH COUNTER</button>
+      <button class="pod-btn" onclick="handleStart('fh_spin')">FH SPIN</button>
+      <button class="pod-btn" onclick="handleStart('bh_normal')">BH COUNTER</button>
+      <button class="pod-btn" onclick="handleStart('bh_spin')">BH SPIN</button>
+      <button class="pod-btn chaos full-width" onclick="handleStart('random')">CHAOS MATRIX</button>
+    </div>
+  </div>
+  <div id="wait-msg-level" class="caution-box" style="display:none;">
+    <span class="blink">⚠</span> SYSTEM BUSY: WAIT YOUR TURN
+  </div>
+</div>
+
+<!-- ── Active drill screen ───────────────────────────────────────────────── -->
+<div id="screen-active" class="screen">
+  <div id="wait-msg-active" class="caution-box" style="display:none; margin-bottom:15px;">
+    <span class="blink">⚠</span> SPECTATOR MODE: LIVE VIEW
+  </div>
+
+  <!-- Live stat pods -->
+  <div class="live-stats">
+    <div class="stat-pod"><span id="live-accuracy">0</span>%<br><small>ACCURACY</small></div>
+    <div class="stat-pod highlight"><span id="live-shots">0</span><br><small>SHOTS</small></div>
+    <div class="stat-pod"><span id="live-streak">0</span><br><small>STREAK</small></div>
+    <!-- Zone indicator pod -->
+    <div class="stat-pod zone-pod">
+      <span id="active-zone-num">—</span><br>
+      <small>TARGET ZONE</small>
+    </div>
+  </div>
+
+  <!-- Canvas court -->
+  <div class="court-wrapper"><canvas id="tt-board"></canvas></div>
+
+  <!-- Zone legend -->
+  <div class="zone-legend">
+    <span class="legend-dot hit"></span>HIT &nbsp;&nbsp;
+    <span class="legend-dot miss"></span>MISS &nbsp;&nbsp;
+    <span class="legend-active-box"></span>ACTIVE ZONE
+  </div>
+
+  <!-- Controls -->
+  <div id="active-controls" class="active-controls">
+    <button class="bio-btn" onclick="handleEnd()">↩ END</button>
+    <button class="bio-btn halt" id="pause-btn" onclick="handlePause()">PAUSE</button>
+  </div>
+</div>
+
+<!-- ── Summary / debrief screen ──────────────────────────────────────────── -->
+<div id="screen-summary" class="screen">
+  <h2 class="main-title">DEBRIEF</h2>
+  <div class="summary-stats">
+    <div class="sum-row">ACCURACY <span id="sum-accuracy">0%</span></div>
+    <div class="sum-row">TOTAL SHOTS <span id="sum-total">0</span></div>
+  </div>
+  <button class="bio-btn return-btn" onclick="showScreen('screen-level')">RETURN</button>
+</div>
+
+<script src="dashboard.js"></script>
+</body>
+</html>
