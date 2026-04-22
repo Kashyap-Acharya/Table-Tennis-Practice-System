@@ -1,122 +1,146 @@
-import asyncio
-import json
-import logging
-import struct
-import random
-import time
+import asyncio, json, random, uuid
 from pathlib import Path
-from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from multiprocessing.shared_memory import SharedMemory
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-
-# --- Configuration ---
-SHM_NAME = "tt_cv_bridge"
-SHM_FMT = "<B B H H B 3x 22x"
-SHM_SIZE = struct.calcsize(SHM_FMT)
-LEVEL_CONFIG = {
-    "BEG": {"interval": (3.0, 5.0), "hit_prob": 0.80, "scatter_mm": 80},
-    "INT": {"interval": (2.0, 3.5), "hit_prob": 0.65, "scatter_mm": 60},
-    "ADV": {"interval": (1.5, 2.5), "hit_prob": 0.50, "scatter_mm": 40},
-}
+from contextlib import asynccontextmanager
 
 @dataclass
-class DrillSession:
-    drill_id: str = ""
+class TrainerState:
     active: bool = False
+    paused: bool = False
     hits: int = 0
-    misses: int = 0
-    current_streak: int = 0
-    best_streak: int = 0
-    start_ts: float = field(default_factory=time.time)
+    shots: int = 0
+    streak: int = 0
+    accuracy: int = 0
+    history: list = field(default_factory=list)
 
-    def reset(self):
-        self.hits = self.misses = self.current_streak = self.best_streak = 0
-        self.start_ts = time.time()
+state = TrainerState()
+BASE_DIR = Path(__file__).resolve().parent
 
-    @property
-    def total_shots(self): return self.hits + self.misses
+class QueueManager:
+    def __init__(self):
+        self.users = [] # {"uid": str, "ws": WebSocket, "grace_task": Task}
 
-    @property
-    def accuracy(self): return int(round(self.hits / max(1, self.total_shots) * 100, 0))
+    async def connect(self, ws: WebSocket, uid: str):
+        await ws.accept()
+        existing_user = next((u for u in self.users if u["uid"] == uid), None)
+        
+        if existing_user:
+            if existing_user["grace_task"]:
+                existing_user["grace_task"].cancel()
+                existing_user["grace_task"] = None
+            existing_user["ws"] = ws
+        else:
+            self.users.append({"uid": uid, "ws": ws, "grace_task": None})
+        
+        await ws.send_json({
+            "event": "session_sync", "active": state.active, "paused": state.paused, 
+            "accuracy": state.accuracy, "total_shots": state.shots, 
+            "streak": state.streak, "history": state.history
+        })
+        await self.sync_queue()
 
-session = DrillSession()
+    def disconnect(self, uid: str):
+        for user in self.users:
+            if user["uid"] == uid:
+                user["grace_task"] = asyncio.create_task(self.evict_after_delay(uid))
+                break
 
-# --- Connection Manager ---
-class ConnectionManager:
-    def __init__(self): self.active: list[WebSocket] = []
-    async def connect(self, ws: WebSocket): await ws.accept(); self.active.append(ws)
-    def disconnect(self, ws: WebSocket): self.active.remove(ws) if ws in self.active else None
-    async def broadcast(self, payload: dict):
-        for ws in self.active:
-            try: await ws.send_json(payload)
-            except: pass
+    async def evict_after_delay(self, uid):
+        try:
+            await asyncio.sleep(5) 
+            
+            # CHECK: Was this user the leader?
+            is_leader_leaving = len(self.users) > 0 and self.users[0]["uid"] == uid
+            
+            self.users = [u for u in self.users if u["uid"] != uid]
+            
+            # IF LEADER LEFT: Stop the drill immediately
+            if is_leader_leaving:
+                state.active = False
+                state.history = []
+                await self.broadcast({"event": "drill_stopped"})
+                print(f"AUTO-STOP: Leader {uid} timed out. Stopping drill.")
 
-manager = ConnectionManager()
+            await self.sync_queue()
+        except asyncio.CancelledError:
+            pass
 
-# --- FastAPI App ---
+    async def sync_queue(self):
+        for i, u in enumerate(self.users):
+            if u["ws"]:
+                try: await u["ws"].send_json({"event": "queue_update", "position": i + 1, "total": len(self.users), "is_leader": i == 0})
+                except: pass
+
+    async def broadcast(self, data):
+        for u in self.users:
+            if u["ws"]:
+                try: await u["ws"].send_json(data)
+                except: pass
+
+    def is_leader(self, uid): 
+        return len(self.users) > 0 and self.users[0]["uid"] == uid
+
+q = QueueManager()
+
+async def telemetry_engine():
+    while True:
+        if state.active and not state.paused:
+            success = random.random() > 0.4
+            coords = {"x": random.randint(450, 1450), "y": random.randint(250, 750)}
+            state.shots += 1
+            if success: state.hits += 1; state.streak += 1
+            else: state.streak = 0
+            state.accuracy = int((state.hits / max(1, state.shots)) * 100)
+            state.history.append({"x": coords["x"], "y": coords["y"], "success": success})
+            if len(state.history) > 50: state.history.pop(0)
+            await q.broadcast({"event": "shot_result", "success": success, "accuracy": state.accuracy, "total_shots": state.shots, "streak": state.streak, "impact_coords": coords})
+        await asyncio.sleep(2)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Mock loop for demo purposes
-    async def mock_loop():
-        while True:
-            if session.active:
-                success = random.random() < 0.7
-                y, z = random.randint(-762, 762), random.randint(0, 1000)
-                if success: session.hits += 1; session.current_streak += 1
-                else: session.misses += 1; session.current_streak = 0
-                session.best_streak = max(session.best_streak, session.current_streak)
-                
-                await manager.broadcast({
-                    "event": "shot_result",
-                    "success": success,
-                    "impact_coords": {"y": y, "z": z},
-                    "accuracy": session.accuracy,
-                    "hit_count": session.hits,
-                    "total_shots": session.total_shots
-                })
-            await asyncio.sleep(3)
-    
-    task = asyncio.create_task(mock_loop())
+    task = asyncio.create_task(telemetry_engine())
     yield
     task.cancel()
 
 app = FastAPI(lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"])
 
-@app.get("/")
-async def get_index(): return FileResponse("index.html")
-
-@app.get("/{file_name}")
-async def get_static(file_name: str): return FileResponse(file_name)
-
 @app.get("/api/session")
 async def get_session():
-    return {
-        "active": session.active,
-        "total_shots": session.total_shots,
-        "hit_count": session.hits,
-        "streak": session.current_streak,
-        "accuracy": session.accuracy
-    }
+    return { "active": state.active, "paused": state.paused, "accuracy": state.accuracy, "total_shots": state.shots, "streak": state.streak, "history": state.history }
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon(): return Response(status_code=204)
+
+@app.get("/")
+async def get_index(): return FileResponse(BASE_DIR / "index.html")
+@app.get("/styles.css")
+async def get_css(): return FileResponse(BASE_DIR / "styles.css")
+@app.get("/dashboard.js")
+async def get_js(): return FileResponse(BASE_DIR / "dashboard.js")
+
+@app.websocket("/ws/{uid}")
+async def websocket_endpoint(ws: WebSocket, uid: str):
+    await q.connect(ws, uid)
     try:
         while True:
-            data = await websocket.receive_json()
-            if data["action"] == "start_drill":
-                session.active = True
-                session.reset()
-                await manager.broadcast({"event": "drill_started", "drill_id": data["drill_id"]})
-            elif data["action"] == "stop_drill":
-                session.active = False
-                await manager.broadcast({"event": "drill_stopped"})
+            data = await ws.receive_json()
+            if not q.is_leader(uid): continue 
+            action = data.get("action")
+            if action == "start_drill":
+                state.active, state.paused, state.hits, state.shots, state.streak, state.history = True, False, 0, 0, 0, []
+                await q.broadcast({"event": "drill_started"})
+            elif action == "pause_drill":
+                state.paused = not state.paused
+                await q.broadcast({"event": "drill_paused", "paused": state.paused})
+            elif action == "stop_drill":
+                state.active = False
+                await q.broadcast({"event": "drill_stopped"})
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        q.disconnect(uid)
 
 if __name__ == "__main__":
     import uvicorn
